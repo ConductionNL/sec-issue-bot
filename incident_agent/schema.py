@@ -33,6 +33,14 @@ class IncidentTemplate(BaseModel):
     # 5. Leerpunten
     leerpunten: Optional[str] = Field(None, description="5. Lessons learned")
 
+    # 6. Relatie met beheersmaatregelen (ISO 27001 Annex A)
+    relatie_iso27001_annex_a: Optional[str] = Field(
+        None,
+        description=(
+            "6. Relation to ISO 27001 Annex A controls: If relevant, note related controls, their role, and proposed adjustments."
+        ),
+    )
+
 
 class ExtractionQuestion(BaseModel):
     field_key: str = Field(..., description="Key of the field in IncidentTemplate to be filled")
@@ -59,4 +67,5 @@ DUTCH_FIELD_LABELS: Dict[str, str] = {
     "actualisatie_risico": "4.2 Update of risk inventory based on deviation (if applicable)",
     "aanpassing_kwaliteitssysteem": "4.3 Adjustment to quality system (if applicable)",
     "leerpunten": "5. Lessons learned",
+    "relatie_iso27001_annex_a": "6. Relation to ISO 27001 Annex A controls",
 }

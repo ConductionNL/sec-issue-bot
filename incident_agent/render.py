@@ -70,5 +70,8 @@ def render_markdown(template: IncidentTemplate) -> str:
     lines.append("")
     lines.append("# 5. Lessons learned")
     lines.append(val("leerpunten"))
+    lines.append("")
+    lines.append("# 6. Relation to ISO 27001 Annex A controls")
+    lines.append(val("relatie_iso27001_annex_a"))
 
     return "\n".join(lines)

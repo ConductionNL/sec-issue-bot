@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import logging
 from typing import Any, Dict, Tuple, Optional
+import time
 
 from dotenv import load_dotenv
 from slack_bolt import App as SlackApp
@@ -37,12 +38,8 @@ def build_slack_app() -> SlackApp:
         """
         if isinstance(q, dict):
             field_for_q = str(q.get("field_key", ""))
-            if field_for_q == "risicoafweging":
-                return "Should a risk assessment be made: yes / no"
             return str(q.get("question_text", ""))
         field_for_q = str(getattr(q, "field_key", ""))
-        if field_for_q == "risicoafweging":
-            return "Should a risk assessment be made: yes / no"
         return str(getattr(q, "question_text", ""))
 
     def _q_field(q: Any) -> str:
@@ -134,7 +131,8 @@ def build_slack_app() -> SlackApp:
             label = DUTCH_FIELD_LABELS.get(pending_field, pending_field)
             lines.append(f"- Waiting for confirmation for: {label}")
         elif remaining > 0 and idx < len(questions):
-            lines.append(f"- Next question: {_q_display(questions[idx])}")
+            total = len(questions)
+            lines.append(f"- *Question {idx+1}/{total}* {_q_display(questions[idx])}")
         return "\n".join(lines)
 
     def _next_step_text(conv: Dict[str, Any]) -> str:
@@ -155,7 +153,8 @@ def build_slack_app() -> SlackApp:
         questions = conv.get("questions", [])
         idx = conv.get("index", 0)
         if idx < len(questions):
-            return f"Next question: {_q_display(questions[idx])}"
+            total = len(questions)
+            return f"*Question {idx+1}/{total}*\n{_q_display(questions[idx])}"
         return "No open questions left. Send `finalize` to finish."
 
     def _compute_next_index(conv: Dict[str, Any], start_index: int) -> int:
@@ -349,42 +348,50 @@ def build_slack_app() -> SlackApp:
 
     PREFACE_TEXT = (
         "*Dealing with security incidents* (e.g. data leak)\n"
-        "A security incident can happen with any project at any time. When a security incident occurs, the reporter should take the steps outlines below.\n"
-        "I can assist you with creating the incident report (step 7). Please start with the first six steps yourself. Once you are ready to start the report, type `start` to start filling out the report\n\n"
-        "*Steps*\n"
-        "_Steps preceding the incident report_\n"
-        "1. Contact the appropriate internal product owner\n"
-        "2. Create an issue on the appropriate Jira board and label it “incident” under security.\n"
-        "3. Get approval for containing the incident from the product owner. Make sure the product owner understands the implications of containing the incident. Consider the following options:\n"
-        "  a) If it is a user, block the user.\n"
-        "  b) If it is a connection, block the connection/disconnect\n"
-        "  c) If it is an API key or certificate, revoke it.\n"
-        "  d) If it is an environment or server, shut it down.\n"
-        "4. Secure the data, e.g., make additional copies of logs, databases, etc.\n"
-        "5. Fix the problem. If you can fix it, fix it.\n"
-        "6. Assess the damage\n"
-        "  a) Has personal data been leaked?\n"
-        "  b) Has confidential data been leaked?\n\n"
-        "7. Write a report: type `start` to start filling out the report\n\n"
-        "_Steps following the incident report_\n"
-        "8. Any resulting issues like tasks and user stories or documents should be linked to the original issue to preserve a chain of events.\n"
-        "9. The product owner will determine additional actions, like\n"
-        "  a) Preventive measures for the future\n"
-        "  b) Changes in manuals and processes\n"
-        "  c) Contact with the client\n"
-        "  d) Reporting the incident to authorities\n"
-        "10. Security incidents will ALWAYS be shown in the Kwaliteit/veiligheidsdashboard and reviewed every LT meeting (Weekly).\n"
-        "11. A final review will be planned in the first LT kwaliteit/veiligheid meeting to come after three months.\n"
-        "12. Evaluation After Incidents Involving External Vendors: "
-        "After the resolution of an incident in which an external vendor (such as a hosting partner) played a role in the cause or impact, Conduction conducts an evaluation meeting with the client."
-        "During this meeting, the cause, impact, communication, responsibilities, and possible next steps are discussed."
-        "If the client requires a detailed advisory report or redesign proposal, a confirmation of assignment or quotation will be prepared accordingly.\n"
-        "\n"
-        "*Data Security Contact Person*\n"
-        "Ruben is our designated Data Security Officer. If you encounter any incidents or have questions related to data security, he is your go-to person. Please feel free to reach out to him directly for support, guidance, or to report any concerns.\n\n"
-        "*Fill out the report here*\n"
-        "Once you have completed steps 1-6, type `start` to start filling out the report. After you have answered all the questions, I will create a Jira issue for you."
+        "A security incident can happen with any project at any time. Do not panic, I will guide you through all the steps you should take to report this issue.\n"
+        "I will show you the steps one by one, and you can confirm with `yes` when you have completed each step.\n\n"
     )
+
+    # Preface steps split into confirmable chunks
+    PREFACE_STEPS: list[str] = [
+        "Contact the appropriate internal product owner",
+        (
+            "Get approval for containing the incident from the product owner. Make sure the product owner understands the implications of containing the incident. Consider the following options:\n"
+            "  a) If it is a user, block the user.\n"
+            "  b) If it is a connection, block the connection/disconnect\n"
+            "  c) If it is an API key or certificate, revoke it.\n"
+            "  d) If it is an environment or server, shut it down."
+        ),
+        "Secure the data, e.g., make additional copies of logs, databases, etc.",
+        "Fix the problem. If you can fix it, fix it.",
+        (
+            "Assess the damage\n"
+            "  a) Has personal data been leaked?\n"
+            "  b) Has confidential data been leaked?"
+        ),
+        "Write a report: type `start` to start filling out the report together with me",
+    ]
+
+    def _preface_step_text(step_index: int) -> str:
+        """
+        Render the preface step message for a given 1-based step index.
+
+        @param step_index: 1-based index into PREFACE_STEPS.
+        @return str: Slack-formatted text for the step.
+        """
+        total = len(PREFACE_STEPS)
+        step_index = max(1, min(step_index, total))
+        body = PREFACE_STEPS[step_index - 1]
+        if step_index < total:
+            return (
+                f"*Step {step_index}/{total}*\n{body}\n\n"
+                "Reply `yes` when completed to show the next step."
+            )
+        # Step 7: prompt to start
+        return (
+            f"*Step {step_index}/{total}*\n{body}\n\n"
+            "Type `start` to begin the incident report."
+        )
 
     FOLLOWUP_STEPS_TEXT = (
         "*Reminder: Steps following the incident report*\n"
@@ -401,13 +408,19 @@ def build_slack_app() -> SlackApp:
         "If the client requires a detailed advisory report or redesign proposal, a confirmation of assignment or quotation will be prepared accordingly."
     )
 
-    WELCOME_TEXT = (
-        "Welcome! I will help you quickly and systematically record a security incident.\n\n"
+    WELCOME_TEXT_PART_1 = (
+        "I will now help you to quickly and systematically record a security incident.\n\n"
         "*How it works*:\n"
         "I will ask short questions so we can complete the incident template together and create a Jira issue.\n\n"
+    )
+
+    WELCOME_TEXT_PART_2 = (
         "*Mode*:\n"
         "We are in `story` mode: I rewrite your answers into short, clean sentences. In this mode I will first show each rewritten text for your confirmation.\n"
         "If you want me to take your words literally, switch to `literal` mode with `mode literal` or use a one-off `literal: <answer>`. In `literal` mode your answer is taken as-is without confirmation.\n\n"
+    )
+
+    WELCOME_TEXT_PART_3 = (
         "*Options*:\n"
         "- `edit`: change previously filled fields with `edit <field> <value>`; for example `edit 2.1 email data leak`\n"
         "- `show`: show the current Markdown\n"
@@ -417,6 +430,20 @@ def build_slack_app() -> SlackApp:
         "- `finalize`: receive the final document\n"
         "- `jira`: create a Jira issue with the final document as description (and as .md attachment)\n\n"
     )
+
+    def _send_welcome(thread_ts: str, say) -> None:  # type: ignore
+        """
+        Send the welcome content as three consecutive messages.
+
+        @param thread_ts: Slack thread timestamp to reply in.
+        @param say: Slack 'say' function used to send messages.
+        @return None
+        """
+        say(text=WELCOME_TEXT_PART_1, thread_ts=thread_ts)
+        time.sleep(2)
+        say(text=WELCOME_TEXT_PART_2, thread_ts=thread_ts)
+        time.sleep(2)
+        say(text=WELCOME_TEXT_PART_3, thread_ts=thread_ts)
 
 
     def _load_usage_text() -> str:
@@ -595,7 +622,7 @@ def build_slack_app() -> SlackApp:
         if not conv:
             # If user types 'start' as a thread reply, initialize and start at question 1
             if has_thread and text in {"start", "/start"}:
-                say(text=WELCOME_TEXT, thread_ts=root_ts)
+                _send_welcome(root_ts, say)
                 result = extractor.extract("")
                 state[(channel, root_ts)] = {
                     "data": result.data.model_dump(),
@@ -607,38 +634,65 @@ def build_slack_app() -> SlackApp:
                     "confirm_action": None,
                 }
                 if result.questions:
-                    say(text=f"First question: {_q_display(result.questions[0])}", thread_ts=root_ts)
+                    total = len(result.questions)
+                    say(text=f"*Question 1/{total}*\n{_q_display(result.questions[0])}", thread_ts=root_ts)
                 else:
                     say(text="No open questions. Send `finalize` to finish.", thread_ts=root_ts)
                 return
-            # In a DM without a thread: always start a new incident anchored to this message
+            # In a DM without a thread: initialize preface flow anchored to this message
             if not has_thread and text_raw:
                 print(f"[incident-bot] New DM conversation: channel={channel} root_ts={root_ts} text={text_raw!r}")
-                # Show preface first. Only start after user types 'start'.
+                state[(channel, root_ts)] = {
+                    "status": "preface",
+                    "preface_index": 1,
+                }
                 say(text=PREFACE_TEXT, thread_ts=root_ts)
-                if text in {"start", "/start"}:
-                    say(text=WELCOME_TEXT, thread_ts=root_ts)
-                    result = extractor.extract("")
-                    state[(channel, root_ts)] = {
-                        "data": result.data.model_dump(),
-                        "questions": [q.model_dump() for q in result.questions],
-                        "index": 0,
-                        "status": "collecting",
-                        "mode": "story",
-                        "pending": None,
-                        "confirm_action": None,
-                    }
-                    if result.questions:
-                        say(text=f"First question: {_q_display(result.questions[0])}", thread_ts=root_ts)
-                    else:
-                        say(text="No open questions. Send `finalize` to finish.", thread_ts=root_ts)
-                    return
+                say(text=_preface_step_text(1), thread_ts=root_ts)
                 return
-            # Otherwise guide the user
+            # Otherwise guide the user by starting the preface flow
             if not has_thread:
+                state[(channel, root_ts)] = {
+                    "status": "preface",
+                    "preface_index": 1,
+                }
                 say(text=PREFACE_TEXT, thread_ts=root_ts)
-                say(text="Type `start` to begin.", thread_ts=root_ts)
+                say(text=_preface_step_text(1), thread_ts=root_ts)
             return
+
+        # Handle preface confirmation flow: show next step after confirmation until step 7
+        if conv.get("status") == "preface":
+            idx = int(conv.get("preface_index", 1))
+            total = len(PREFACE_STEPS)
+            # Steps 1-6 require confirmation (yes/ok)
+            if idx < total:
+                if _is_accept(text_raw) or _is_yes(text_raw):
+                    conv["preface_index"] = idx + 1
+                    say(text=_preface_step_text(idx + 1), thread_ts=root_ts)
+                else:
+                    say(text=f"Please complete step {idx} and reply `yes` to continue.", thread_ts=root_ts)
+                return
+            # Step 7 requires 'start' to proceed
+            if text in {"start", "/start"}:
+                _send_welcome(root_ts, say)
+                result = extractor.extract("")
+                state[(channel, root_ts)] = {
+                    "data": result.data.model_dump(),
+                    "questions": [q.model_dump() for q in result.questions],
+                    "index": 0,
+                    "status": "collecting",
+                    "mode": "story",
+                    "pending": None,
+                    "confirm_action": None,
+                }
+                if result.questions:
+                    total = len(result.questions)
+                    say(text=f"*Question 1/{total}*\n{_q_display(result.questions[0])}", thread_ts=root_ts)
+                else:
+                    say(text="No open questions. Send `finalize` to finish.", thread_ts=root_ts)
+                return
+            else:
+                say(text=_preface_step_text(idx), thread_ts=root_ts)
+                return
 
         # If we are awaiting a confirmation to proceed with a risky action (finalize/jira)
         confirm_action = conv.get("confirm_action")
@@ -674,7 +728,7 @@ def build_slack_app() -> SlackApp:
                     say(
                         text=(
                             "Warning: You have not answered all the questions yet. "
-                            "Are you sure you want to finalize? Reply `yes` to proceed or `no` to continue."
+                            "Are you sure you want to finalize? Reply `yes` to proceed or `no` to cancel and continue with the questions."
                         ),
                         thread_ts=root_ts,
                     )
@@ -697,7 +751,7 @@ def build_slack_app() -> SlackApp:
                     say(
                         text=(
                             "Warning: You have not answered all the questions yet. "
-                            "Are you sure you want to create a Jira issue? Reply `yes` to proceed or `no` to continue."
+                            "Are you sure you want to create a Jira issue? Reply `yes` to proceed or `no` to cancel and continue with the questions."
                         ),
                         thread_ts=root_ts,
                     )
