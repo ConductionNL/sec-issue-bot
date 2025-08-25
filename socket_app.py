@@ -11,6 +11,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from incident_agent.extract import IncidentExtractor
 from incident_agent.render import render_markdown
+from incident_agent import messages as MSG
 from incident_agent.jira_client import JiraClient
 from incident_agent.schema import IncidentTemplate, DUTCH_FIELD_LABELS
 
@@ -155,7 +156,7 @@ def build_slack_app() -> SlackApp:
         if idx < len(questions):
             total = len(questions)
             return f"*Question {idx+1}/{total}*\n{_q_display(questions[idx])}"
-        return "No open questions left. Send `finalize` to finish."
+        return MSG.no_open_questions_short()
 
     def _compute_next_index(conv: Dict[str, Any], start_index: int) -> int:
         """
@@ -246,31 +247,13 @@ def build_slack_app() -> SlackApp:
         """
         try:
             label = DUTCH_FIELD_LABELS.get(field_key, field_key)
-            sys = (
-                "You are an assistant that turns short notes into a clear, professional, concise text in English. "
-                "Strict rules: (1) Use ONLY the 'Input' section as the source. Do NOT use any other context. "
-                "(2) Do NOT add facts or details that are not explicitly in the input (no hallucinations). "
-                "(3) Rewrite for clarity/readability; reformulate into well-formed sentences; do not change content."
-                "(4) Do not enrich the output with additional information. "
-                "(5) Return only the reformulated text, without extra explanations. "
-                "(6) Do not repeat the field name in the output."
-                "(7) Make sure you retain all relevant facts."
-                "Example: dataleak in db -> There is a data leak in the database."
-            )
+            sys = MSG.rewriter_system_prompt()
             # Als de input leeg of whitespace is, geef leeg terug
             if not isinstance(raw_text, str) or not raw_text.strip():
                 return ""
             messages = [
                 {"role": "system", "content": sys},
-                {
-                    "role": "user",
-                    "content": (
-                        "Rewrite only the text under 'Input'. Do NOT use any other source. "
-                        "If the input carries little information, keep the output equally minimal.\n\n"
-                        f"Field: '{label}'\n"
-                        f"Input (only source):\n{raw_text}"
-                    ),
-                },
+                {"role": "user", "content": MSG.rewriter_user_prompt(label, raw_text)},
             ]
             print(messages)
             completion = extractor.client.chat.completions.create(
@@ -282,6 +265,55 @@ def build_slack_app() -> SlackApp:
         except Exception as e:
             logging.error(f"Error rewriting with model: {e}")     
             return raw_text
+
+    def _revise_with_history(field_key: str, history: list[dict], instructions: str) -> str:
+        """
+        Use the accumulated message history for a single field to produce a refined draft.
+
+        @param field_key: Field being revised.
+        @param history: List of {role, content} messages alternating user/assistant.
+        @param instructions: Latest user instruction to refine the draft.
+        @return str: Revised draft text.
+        """
+        try:
+            if not isinstance(instructions, str) or not instructions.strip():
+                # No instruction; return last assistant content if present
+                for msg in reversed(history):
+                    if msg.get("role") == "assistant":
+                        content = msg.get("content") or ""
+                        return content.strip()
+                return ""
+            label = DUTCH_FIELD_LABELS.get(field_key, field_key)
+            sys = MSG.revision_system_prompt()
+            messages = [{"role": "system", "content": sys}]
+            # Append prior conversation for this field
+            for m in history:
+                role = m.get("role") or "user"
+                content = (m.get("content") or "").strip()
+                if not content:
+                    continue
+                messages.append({"role": role, "content": content})
+            # Append latest instruction as user message
+            messages.append({"role": "user", "content": instructions.strip()})
+            completion = extractor.client.chat.completions.create(
+                model=extractor.model,
+                messages=messages,
+            )
+            content = completion.choices[0].message.content or ""
+            return content.strip()
+        except Exception as e:
+            logging.error(f"Error revising with history: {e}")
+            return instructions
+
+    def _set_pending_with_history(conv: Dict[str, Any], field: str, user_text: str, draft_value: str) -> None:
+        """
+        Initialize or reset the pending structure for a field with history.
+        """
+        history = [
+            {"role": "user", "content": user_text or ""},
+            {"role": "assistant", "content": draft_value or ""},
+        ]
+        conv["pending"] = {"field": field, "candidate": draft_value, "history": history}
 
     def _parse_mode_prefix(text: str) -> tuple[Optional[str], str]:
         """
@@ -317,12 +349,10 @@ def build_slack_app() -> SlackApp:
             if isinstance(current_value, str) and current_value.strip() and mode_to_use == "story"
             else str(current_value)
         )
-        conv["pending"] = {"field": field, "candidate": value}
+        _set_pending_with_history(conv, field, str(current_value), value)
         label = DUTCH_FIELD_LABELS.get(field, field)
         say(
-            text=(
-                f"Proposal for {label}:\n{value}\n\nConfirm with `yes`/`ok`, or provide an alternative via `new <value>` (optional `new literal:` or `new story:`)."
-            ),
+            text=MSG.proposal(label, value),
             thread_ts=thread_ts,
         )
 
@@ -343,7 +373,7 @@ def build_slack_app() -> SlackApp:
         "Start: type `start` to begin, then provide a short description.\n"
         "Finish: type `finalize` in the thread.\n"
         "Create an issue: type `jira` in the thread.\n"
-        "After each answer we show a proposal; confirm with `yes`/`ok` or provide an alternative via `new <value>` (optional `new literal:` or `new story:`)."
+        "After each answer we show a proposal; confirm with `yes`/`ok`, provide an alternative with `new <value>`,  or type instructions how to change it."
     )
 
     PREFACE_TEXT = (
@@ -708,8 +738,7 @@ def build_slack_app() -> SlackApp:
                 return
             else:
                 say(text=(
-                    "Please answer `yes` to proceed or `no` to cancel. "
-                    + _next_step_text(conv)
+                    MSG.proceed_or_cancel_instruction() + " " + _next_step_text(conv)
                 ), thread_ts=root_ts)
                 return
 
@@ -726,10 +755,7 @@ def build_slack_app() -> SlackApp:
                 if incomplete and not conv.pop("override_incomplete", False):
                     conv["confirm_action"] = "finalize"
                     say(
-                        text=(
-                            "Warning: You have not answered all the questions yet. "
-                            "Are you sure you want to finalize? Reply `yes` to proceed or `no` to cancel and continue with the questions."
-                        ),
+                        text=MSG.warning_incomplete("finalize"),
                         thread_ts=root_ts,
                     )
                     return
@@ -749,10 +775,7 @@ def build_slack_app() -> SlackApp:
                 if incomplete and not conv.pop("override_incomplete", False):
                     conv["confirm_action"] = "jira"
                     say(
-                        text=(
-                            "Warning: You have not answered all the questions yet. "
-                            "Are you sure you want to create a Jira issue? Reply `yes` to proceed or `no` to cancel and continue with the questions."
-                        ),
+                        text=MSG.warning_incomplete("jira"),
                         thread_ts=root_ts,
                     )
                     return
@@ -945,10 +968,10 @@ def build_slack_app() -> SlackApp:
                 mode_to_use = forced or conv.get("mode", "story")
                 if mode_to_use == "story":
                     value = _rewrite_with_model(nv_body, key, conv["data"])  # propose and confirm
-                    conv["pending"] = {"field": key, "candidate": value}
+                    _set_pending_with_history(conv, key, nv_body, value)
                     label = DUTCH_FIELD_LABELS.get(key, key)
                     say(text=(
-                        f"Proposal for {label}:\n{value}\n\nConfirm with `yes`/`ok`, or provide an alternative via `new <value>` (optional `new literal:` or `new story:`)."
+                        f"Proposal for {label}:\n{value}\n\nConfirm with `yes`/`ok`, provide an alternative via `new <value>` (optional `new literal:` or `new story:`), or type instructions how to change it.."
                     ), thread_ts=root_ts)
                 else:
                     conv["data"][key] = nv_body
@@ -993,9 +1016,9 @@ def build_slack_app() -> SlackApp:
                 conv["index"] = next_idx
                 if next_idx < len(questions):
                     next_q = questions[next_idx]
-                    say(text=f"Confirmed. Next question: {_q_display(next_q)}", thread_ts=root_ts)
+                    say(text=MSG.next_question("Confirmed", _q_display(next_q)), thread_ts=root_ts)
                 else:
-                    say(text="Confirmed. All questions answered. Send `finalize` to finish.", thread_ts=root_ts)
+                    say(text=MSG.all_questions_answered(), thread_ts=root_ts)
                 return
             else:
                 # Special case: for risicoafweging, after a 'yes' we expect an additional detail.
@@ -1007,12 +1030,11 @@ def build_slack_app() -> SlackApp:
                         mode_to_use = forced or conv.get("mode", "story")
                         detail_value = _rewrite_with_model(detail_body, field, conv["data"]) if mode_to_use == "story" else detail_body
                         combined = f"yes: {detail_value}"
-                        conv["pending"] = {"field": field, "candidate": combined}
-                        say(text=(
-                            f"Proposal for {label}:\n{combined}\n\nConfirm with `yes`/`ok`, or provide an alternative via `new <value>` (optional `new literal:` or `new story:`)."
-                        ), thread_ts=root_ts)
+                        # Initialize per-field history starting from the yes + detail response and draft
+                        _set_pending_with_history(conv, field, text_raw, combined)
+                        say(text=MSG.proposal(label, combined), thread_ts=root_ts)
                         return
-                # Only accept 'new <waarde>' to change proposal; otherwise repeat current proposal
+                # Treat any non-accept, non-new input as revision instructions using per-field history
                 lower = text.strip().lower()
                 if lower.startswith("new ") or lower == "new":
                     new_body = text_raw.split(" ", 1)[1] if " " in text_raw else ""
@@ -1033,19 +1055,24 @@ def build_slack_app() -> SlackApp:
                         conv["index"] = next_idx
                         if next_idx < len(questions):
                             next_q = questions[next_idx]
-                            say(text=f"Confirmed. Next question: {_q_display(next_q)}", thread_ts=root_ts)
+                            say(text=MSG.next_question("Confirmed", _q_display(next_q)), thread_ts=root_ts)
                         else:
-                            say(text="Confirmed. All questions answered. Send `finalize` to finish.", thread_ts=root_ts)
+                            say(text=MSG.all_questions_answered(), thread_ts=root_ts)
                         return
                     # Story mode: propose and require confirmation
                     value = _rewrite_with_model(new_value_body, field, conv["data"]) if mode_to_use == "story" else new_value_body
-                    conv["pending"] = {"field": field, "candidate": value}
-                    say(text=f"Proposal for {label}:\n{value}\n\nConfirm with `yes`/`ok`, or provide an alternative via `new <value>` (optional `new literal:` or `new story:`).", thread_ts=root_ts)
+                    _set_pending_with_history(conv, field, new_value_body, value)
+                    say(text=MSG.proposal(label, value), thread_ts=root_ts)
                     return
-                # Repeat current proposal unchanged, but inform about valid options
-                say(text="This is not a recognized option. Choose `yes`/`ok` to accept or `new` to propose a new value.", thread_ts=root_ts)
-                current = (pending.get("candidate") or "").strip()
-                say(text=f"Proposal for {label}:\n{current}\n\nConfirm with `yes`/`ok`, or provide an alternative via `new <value>` (optional `new literal:` or `new story:`).", thread_ts=root_ts)
+                # Otherwise, refine using history and the freeform instructions
+                history = pending.get("history") or []
+                # Append latest user instruction
+                history.append({"role": "user", "content": text_raw})
+                revised = _revise_with_history(field, history, text_raw)
+                # Append assistant result and update pending
+                history.append({"role": "assistant", "content": revised})
+                conv["pending"] = {"field": field, "candidate": revised, "history": history}
+                say(text=MSG.proposal(label, revised), thread_ts=root_ts)
                 return
 
         # If there are questions, consume next and request confirmation only in story mode
@@ -1063,9 +1090,7 @@ def build_slack_app() -> SlackApp:
                     if _is_yes(yn):
                         conv["data"][field] = "yes"
                         say(
-                            text=(
-                                "For making a risk assessment, contact Mark, holder of the risk inventory. What was agreed as a result of this discussion?"
-                            ),
+                            text=MSG.risk_assessment_followup_question(),
                             thread_ts=root_ts,
                         )
                         # Keep index; expect user's next message as the outcome and confirm/commit per mode
@@ -1078,20 +1103,20 @@ def build_slack_app() -> SlackApp:
                         conv["index"] = next_idx
                         if next_idx < len(questions):
                             next_q = questions[next_idx]
-                            say(text=f"Thank you. Next question: {_q_display(next_q)}", thread_ts=root_ts)
+                            say(text=MSG.next_question("Thank you", _q_display(next_q)), thread_ts=root_ts)
                         else:
                             say(text="Thank you. All questions answered. Send `finalize` to finish.", thread_ts=root_ts)
                             say(text=FOLLOWUP_STEPS_TEXT, thread_ts=root_ts)
                         return
                     else:
-                        say(text=f"Please answer `yes` or `no` for 2.3 Risk assessment.\n\nQuestion: {_q_display(q)}", thread_ts=root_ts)
+                        say(text=MSG.risk_assessment_yesno_prompt(_q_display(q)), thread_ts=root_ts)
                         return
                 else:
                     if mode_to_use == "story":
                         value = _rewrite_with_model(body_text, field, conv["data"]) 
-                        conv["pending"] = {"field": field, "candidate": value}
+                        _set_pending_with_history(conv, field, body_text, value)
                         label = DUTCH_FIELD_LABELS.get(field, field)
-                        say(text=f"Proposal for {label}:\n{value}\n\nConfirm with `yes`/`ok`, or provide an alternative via `new <value>` (optional `new literal:`/`new story:`).", thread_ts=root_ts)
+                        say(text=MSG.proposal(label, value), thread_ts=root_ts)
                         return
                     else:
                         # Literal mode: commit and advance
@@ -1099,14 +1124,14 @@ def build_slack_app() -> SlackApp:
                         conv["index"] = idx + 1
                         if conv["index"] < len(questions):
                             next_q = questions[conv["index"]]
-                            say(text=f"Thank you. Next question: {_q_display(next_q)}", thread_ts=root_ts)
+                            say(text=MSG.next_question("Thank you", _q_display(next_q)), thread_ts=root_ts)
                         else:
-                            say(text="No open questions left. *Please create a Jira issue for this report using the `jira` command*. Type `finalize` to print the final report (markdown).", thread_ts=root_ts)
+                            say(text=MSG.no_open_questions_with_jira(), thread_ts=root_ts)
                             say(text=FOLLOWUP_STEPS_TEXT, thread_ts=root_ts)
                         return
         else:
             # No questions; suggest finalize
-            say(text="No open questions left. *Please create a Jira issue for this report using the `jira` command*. Type `finalize` to print the final report (markdown).", thread_ts=root_ts)
+            say(text=MSG.no_open_questions_with_jira(), thread_ts=root_ts)
             say(text=FOLLOWUP_STEPS_TEXT, thread_ts=root_ts)
             return
 
