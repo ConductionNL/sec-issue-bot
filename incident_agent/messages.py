@@ -66,7 +66,7 @@ def proceed_or_cancel_instruction() -> str:
     return "Please answer `yes` to proceed or `no` to cancel."
 
 
-# ===== Static help/preface/welcome texts =====
+# ===== Static help/preface/form texts =====
 
 # General help shown in threads (DM)
 HELP_TEXT: str = (
@@ -131,19 +131,19 @@ FOLLOWUP_STEPS_TEXT: str = (
     "If the client requires a detailed advisory report or redesign proposal, a confirmation of assignment or quotation will be prepared accordingly."
 )
 
-WELCOME_TEXT_PART_1: str = (
+FORM_TEXT_PART_1: str = (
     "I will now help you to quickly and systematically record a security incident.\n\n"
     "*How it works*:\n"
     "I will ask short questions so we can complete the incident template together and create a Jira issue.\n\n"
 )
 
-WELCOME_TEXT_PART_2: str = (
+FORM_TEXT_PART_2: str = (
     "*Mode*:\n"
     "We are in `story` mode: I rewrite your answers into short, clean sentences. In this mode I will first show each rewritten text for your confirmation.\n"
     "If you want me to take your words literally, switch to `literal` mode with `mode literal` or use a one-off `literal: <answer>`. In `literal` mode your answer is taken as-is without confirmation.\n\n"
 )
 
-WELCOME_TEXT_PART_3: str = (
+FORM_TEXT_PART_3: str = (
     "*Options*:\n"
     "- `edit`: change previously filled fields with `edit <field> <value>`; for example `edit 2.1 email data leak`\n"
     "- `show`: show the current Markdown\n"

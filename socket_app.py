@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional, Callable
 import re
 import time
 
@@ -15,6 +15,28 @@ from incident_agent.render import render_markdown
 from incident_agent import messages as MSG
 from incident_agent.jira_client import JiraClient
 from incident_agent.schema import IncidentTemplate, DUTCH_FIELD_LABELS
+from incident_agent.utils import (
+    q_text as _q_text,
+    q_field as _q_field,
+    q_number as _q_number,
+    q_display as _q_display,
+    is_accept as _is_accept,
+    is_yes as _is_yes,
+    is_no as _is_no,
+    format_status as _format_status,
+    next_step_text as _next_step_text,
+    compute_next_index as _compute_next_index,
+    resolve_field_key as _resolve_field_key,
+    format_fields_list as _format_fields_list,
+    parse_mode_prefix as _parse_mode_prefix,
+    to_adf as _to_adf,
+    to_adf_desc as _to_adf_desc,
+    build_home_view as _build_home_view,
+    rewrite_with_model as _rewrite_with_model,
+    revise_with_history as _revise_with_history,
+    set_pending_with_history as _set_pending_with_history,
+    propose_confirmation_for_field as _propose_confirmation_for_field,
+)
 
 
 # In-memory state: keyed by (channel, thread_ts)
@@ -44,200 +66,7 @@ def build_slack_app() -> SlackApp:
     """
     app = SlackApp(token=os.environ.get("SLACK_BOT_TOKEN"))
     extractor = IncidentExtractor()
-
-    def _q_text(q: Any) -> str:
-        """
-        Resolve the human-readable question text for a question object/dict.
-
-        @param q: Question, either a dict with keys like 'field_key'/'question_text' or a model.
-        @return str: Display text for the question.
-        """
-        if isinstance(q, dict):
-            field_for_q = str(q.get("field_key", ""))
-            return str(q.get("question_text", ""))
-        field_for_q = str(getattr(q, "field_key", ""))
-        return str(getattr(q, "question_text", ""))
-
-    def _q_field(q: Any) -> str:
-        """
-        Get the field key for a question object/dict.
-
-        @param q: Question, either a dict or model with 'field_key'.
-        @return str: Field key string (may be empty).
-        """
-        if isinstance(q, dict):
-            return str(q.get("field_key", ""))
-        return str(getattr(q, "field_key", ""))
-
-    def _q_number(q: Any) -> str:
-        """
-        Extract the numeric prefix from the localized label (e.g., "2.1").
-
-        @param q: Question reference used to resolve the field key.
-        @return str: Number token if present, otherwise empty string.
-        """
-        field_key = _q_field(q)
-        label = DUTCH_FIELD_LABELS.get(field_key, field_key)
-        num = label.split(" ")[0].strip()
-        return num if num.replace(".", "").isdigit() else ""
-
-    def _q_display(q: Any) -> str:
-        """
-        Build a display string for the question with optional numeric prefix.
-
-        @param q: Question object/dict.
-        @return str: Display string suitable for Slack messages.
-        """
-        num = _q_number(q)
-        text = _q_text(q)
-        return f"{num}: {text}" if num else text
-
-    def _is_accept(text: str) -> bool:
-        """
-        Check if text indicates acceptance/confirmation.
-
-        @param text: User-provided raw text.
-        @return bool: True if the text means accept/confirm.
-        """
-        t = text.strip().lower()
-        return t in {"ja", "ok", "okay", "akkoord", "yes", "y", "accept"}
-
-    def _is_yes(text: str) -> bool:
-        """
-        Check if text indicates a yes.
-
-        @param text: User-provided raw text.
-        @return bool: True if interpreted as yes.
-        """
-        t = text.strip().lower()
-        return t in {"ja", "yes", "y"}
-
-    def _is_no(text: str) -> bool:
-        """
-        Check if text indicates a no.
-
-        @param text: User-provided raw text.
-        @return bool: True if interpreted as no.
-        """
-        t = text.strip().lower()
-        return t in {"nee", "no", "n"}
-
-    def _format_status(conv: Dict[str, Any]) -> str:
-        """
-        Create a user-facing status summary for the current conversation.
-
-        @param conv: Conversation state dict containing data/questions/index/mode/pending.
-        @return str: Multiline summary.
-        """
-        data = conv.get("data", {})
-        questions = conv.get("questions", [])
-        idx = conv.get("index", 0)
-        filled = [k for k, v in data.items() if isinstance(v, str) and v.strip()]
-        remaining = max(len(questions) - idx, 0)
-        mode = conv.get("mode", "story")
-        pending = conv.get("pending") or {}
-        pending_field = pending.get("field")
-        lines = [
-            "Status:",
-            f"- Filled fields: {len(filled)}",
-            f"- Open questions: {remaining}",
-            f"- Input mode: {mode}",
-        ]
-        if pending_field:
-            label = DUTCH_FIELD_LABELS.get(pending_field, pending_field)
-            lines.append(f"- Waiting for confirmation for: {label}")
-        elif remaining > 0 and idx < len(questions):
-            total = len(questions)
-            lines.append(f"- *Question {idx+1}/{total}* {_q_display(questions[idx])}")
-        return "\n".join(lines)
-
-    def _next_step_text(conv: Dict[str, Any]) -> str:
-        """
-        Compute the next actionable instruction for the user in the thread.
-
-        @param conv: Conversation state dict.
-        @return str: Message indicating what the user should do next.
-        """
-        pending = conv.get("pending") or {}
-        if isinstance(pending, dict) and pending.get("field"):
-            field = pending["field"]
-            label = DUTCH_FIELD_LABELS.get(field, field)
-            return (
-                f"Waiting for confirmation for {label}. Confirm with `yes`/`ok`, or provide an alternative "
-                f"(e.g., `literal ...` or `story ...`)."
-            )
-        questions = conv.get("questions", [])
-        idx = conv.get("index", 0)
-        if idx < len(questions):
-            total = len(questions)
-            return f"*Question {idx+1}/{total}*\n{_q_display(questions[idx])}"
-        return MSG.no_open_questions_short()
-
-    def _compute_next_index(conv: Dict[str, Any], start_index: int) -> int:
-        """
-        Compute the next unanswered question index starting from a position.
-
-        @param conv: Conversation state dict with 'questions' and filled 'data'.
-        @param start_index: Index to start scanning from.
-        @return int: Index of the next unanswered question.
-        """
-        questions = conv.get("questions", []) or []
-        data = conv.get("data", {}) or {}
-        i = max(int(start_index or 0), 0)
-        while i < len(questions):
-            fq = (
-                questions[i].get("field_key")
-                if isinstance(questions[i], dict)
-                else None
-            )
-            val = data.get(fq)
-            if isinstance(val, str) and val.strip():
-                i += 1
-                continue
-            break
-        return i
-
-    def _build_number_index() -> Dict[str, str]:
-        """
-        Build a mapping from numeric label prefixes (e.g., "2.1") to field keys.
-
-        @return Dict[str, str]: Map of number token to field key.
-        """
-        index: Dict[str, str] = {}
-        for key, label in DUTCH_FIELD_LABELS.items():
-            num = label.split(" ")[0].strip()
-            if num.replace(".", "").isdigit():
-                index[num] = key
-        return index
-
-    NUMBER_INDEX = _build_number_index()
-
-    def _resolve_field_key(user_token: str) -> Optional[str]:
-        """
-        Resolve a user-entered token to a field key by key, number, or label text.
-
-        @param user_token: User-supplied token (key, number like 2.1, or label fragment).
-        @return Optional[str]: Matching field key, or None if not found.
-        """
-        t = user_token.strip().lower()
-        if not t:
-            return None
-        # Exact key
-        if t in DUTCH_FIELD_LABELS:
-            return t
-        # Exact number like 2.1 or 3.4
-        if t in NUMBER_INDEX:
-            return NUMBER_INDEX[t]
-        # Match by label prefix/contains
-        for key, label in DUTCH_FIELD_LABELS.items():
-            lbl = label.lower()
-            if lbl.startswith(t) or t in lbl:
-                return key
-        # Fuzzy contains on key
-        for key in DUTCH_FIELD_LABELS.keys():
-            if t in key.lower():
-                return key
-        return None
+    # Helper functions are imported from incident_agent.utils
 
     # ===== Session helpers =====
     def _get_or_create_session(user_id: str) -> Dict[str, Any]:
@@ -245,7 +74,7 @@ def build_slack_app() -> SlackApp:
         if not sess:
             sess = {
                 "user_id": user_id,
-                "state": "IDLE",
+                "state": "WAITING_FOR_INCIDENT",
                 "linked_issue_key": None,
                 "pending_incident_keys": [],
                 "dm_channel": None,
@@ -270,6 +99,268 @@ def build_slack_app() -> SlackApp:
         except Exception:
             return None
         return None
+
+    def _handle_chat_flow(
+        conv: Dict[str, Any],
+        text: str,
+        text_raw: str,
+        channel: str,
+        root_ts: str,
+        say: Callable[[str, str], None],
+    ) -> None:
+        # If we are in the form state, wait for explicit 'start' to continue to questionnaire
+        if conv.get("status") == "form":
+            if text in {"start", "/start"}:
+                _start_regular_flow(channel, root_ts, say)
+                return
+            # Otherwise, ignore other input and remind user to type start
+            say(
+                text=MSG.preface_step_text(len(MSG.PREFACE_STEPS)),
+                thread_ts=root_ts,
+            )
+            return
+        idx = int(conv.get("preface_index", 1))
+        total = len(MSG.PREFACE_STEPS)
+        # Steps 1-6 require confirmation (yes/ok)
+        if idx < total:
+            if _is_accept(text_raw) or _is_yes(text_raw):
+                conv["preface_index"] = idx + 1
+                say(text=MSG.preface_step_text(idx + 1), thread_ts=root_ts)
+            else:
+                say(text=MSG.preface_step_incomplete(idx), thread_ts=root_ts)
+            return
+        # Step 7 requires 'start' to proceed
+        if text in {"start", "/start"}:
+            _start_regular_flow(channel, root_ts, say)
+            return
+        else:
+            say(text=MSG.preface_step_text(idx), thread_ts=root_ts)
+            return
+
+    def _reconstruct_last_message_from_state(
+        channel: str, root_ts: str
+    ) -> Optional[str]:
+        """
+        Reconstruct the most recent bot prompt based on conversation state instead of
+        reading Slack history.
+
+        Preference order:
+        - Preface/form step text
+        - Pending proposal for a field (with candidate value)
+        - Current question prompt
+        - Done guidance
+        """
+        conv = state.get((channel, root_ts)) or {}
+        if not conv:
+            return None
+
+        status = conv.get("status")
+        if status in {"preface", "form"}:
+            try:
+                preface_idx = int(conv.get("preface_index", 1))
+            except Exception:
+                preface_idx = 1
+            total_steps = len(MSG.PREFACE_STEPS)
+            if status == "form":
+                # During the form gate, remind the final preface step which instructs to type start
+                return MSG.preface_step_text(total_steps)
+            return MSG.preface_step_text(preface_idx)
+
+        pending = conv.get("pending") or {}
+        if isinstance(pending, dict) and pending.get("field"):
+            field_key = str(pending.get("field"))
+            candidate = str(pending.get("candidate") or "")
+            label = DUTCH_FIELD_LABELS.get(field_key, field_key)
+            return MSG.proposal(label, candidate)
+
+        try:
+            idx = int(conv.get("index", 0))
+        except Exception:
+            idx = 0
+        questions = conv.get("questions", []) or []
+        if idx < len(questions):
+            return MSG.next_step_text(conv)
+
+        return MSG.no_open_questions_with_jira()
+
+    def _reply_in_active_thread_and_continue(
+        client, dm_channel: str, issue_key: str
+    ) -> None:
+        """
+        Post the link confirmation inside the most recently active DM thread and, if a
+        conversation exists for that thread, prompt the next step instead of restarting.
+
+        @param client: Slack WebClient
+        @param dm_channel: User's DM channel id
+        @param issue_key: Linked Jira issue key to acknowledge
+        """
+        root_ts = ""
+        try:
+            # Fetch recent top-level messages and pick the thread with the most recent activity
+            hist = client.conversations_history(  # type: ignore[attr-defined]
+                channel=dm_channel,
+                limit=50,
+                inclusive=True,
+            )
+            msgs = hist.get("messages", []) or []
+            best = None
+            best_activity = -1.0
+            for m in msgs:
+                try:
+                    root = str(m.get("ts") or "")
+                    # Prefer the most recent reply timestamp if available
+                    latest_reply = str(m.get("latest_reply") or "")
+                    last_ts = float(latest_reply or root)
+                    if last_ts > best_activity:
+                        best_activity = last_ts
+                        best = root
+                except Exception:
+                    continue
+            if best:
+                root_ts = str(best)
+        except Exception:
+            pass
+
+        if root_ts:
+            say_like = _make_say_via_client(client, dm_channel)
+            reconstructed = _reconstruct_last_message_from_state(dm_channel, root_ts)
+            # Post the acknowledgement
+            say_like(text=f"{issue_key} gekoppeld.", thread_ts=root_ts)
+            # Repeat the reconstructed last message, if available
+            if reconstructed:
+                try:
+                    say_like(text=reconstructed, thread_ts=root_ts)
+                except Exception:
+                    pass
+        else:
+            # No messages found in DM; post a simple acknowledgement without starting a new flow
+            try:
+                client.chat_postMessage(  # type: ignore[attr-defined]
+                    channel=dm_channel,
+                    text=f"{issue_key} gekoppeld.",
+                )
+            except Exception:
+                pass
+
+    def _reply_in_given_thread_and_continue(
+        client, channel: str, root_ts: str, issue_key: str
+    ) -> None:
+        """
+        Reply within the provided thread, acknowledge linking, and continue if a
+        conversation exists.
+
+        @param client: Slack WebClient
+        @param channel: Channel id (DM)
+        @param root_ts: Thread root timestamp to reply within
+        @param issue_key: Jira issue key
+        """
+        say_like = _make_say_via_client(client, channel)
+        reconstructed = _reconstruct_last_message_from_state(channel, root_ts)
+        try:
+            say_like(text=f"{issue_key} gekoppeld.", thread_ts=root_ts)
+        except Exception:
+            pass
+        if reconstructed:
+            try:
+                say_like(text=reconstructed, thread_ts=root_ts)
+            except Exception:
+                pass
+
+    def _find_most_recent_user_thread(client, dm_channel: str) -> Optional[str]:
+        """
+        Find the most recently active DM thread whose root message was initiated by a human user.
+
+        @param client: Slack WebClient
+        @param dm_channel: DM channel id
+        @return Optional[str]: Root thread timestamp if found
+        """
+        try:
+            hist = client.conversations_history(  # type: ignore[attr-defined]
+                channel=dm_channel,
+                limit=100,
+                inclusive=True,
+            )
+            msgs = hist.get("messages", []) or []
+            best_root = None
+            best_activity = -1.0
+            for m in msgs:
+                # Only consider top-level messages authored by a user
+                if m.get("bot_id") or m.get("subtype") == "bot_message":
+                    continue
+                if not m.get("user"):
+                    continue
+                # Ensure it's a root message (not a nested reply)
+                ts = str(m.get("ts") or "")
+                thread_ts = str(m.get("thread_ts") or "")
+                if thread_ts and thread_ts != ts:
+                    continue
+                latest_reply = str(m.get("latest_reply") or "")
+                try:
+                    last_ts = float(latest_reply or ts)
+                except Exception:
+                    last_ts = 0.0
+                if last_ts > best_activity:
+                    best_activity = last_ts
+                    best_root = ts
+            return best_root
+        except Exception:
+            return None
+
+    def _ask_link_in_active_user_thread(
+        client, dm_channel: str, issue_key: str
+    ) -> None:
+        """
+        Ask for permission to link the incident inside the most recent user-initiated thread.
+
+        @param client: Slack WebClient
+        @param dm_channel: DM channel id
+        @param issue_key: Jira issue key
+        """
+        root_ts = _find_most_recent_user_thread(client, dm_channel) or ""
+        try:
+            prompt_text = f"Er is een link gedeeld voor {issue_key}. Wil je dit incident koppelen aan dit gesprek?"
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": prompt_text,
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Ja, koppel"},
+                            "style": "primary",
+                            "action_id": "link_incident_confirm",
+                            "value": issue_key,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Nee"},
+                            "action_id": "link_incident_decline",
+                            "value": issue_key,
+                        },
+                    ],
+                },
+            ]
+            if root_ts:
+                client.chat_postMessage(  # type: ignore[attr-defined]
+                    channel=dm_channel,
+                    thread_ts=root_ts,
+                    text=prompt_text,
+                    blocks=blocks,
+                )
+            else:
+                client.chat_postMessage(  # type: ignore[attr-defined]
+                    channel=dm_channel,
+                    text=prompt_text,
+                    blocks=blocks,
+                )
+        except Exception:
+            pass
 
     def _link_issue_to_session(user_id: str, issue_key: str) -> None:
         sess = _get_or_create_session(user_id)
@@ -364,19 +455,16 @@ def build_slack_app() -> SlackApp:
 
             sess = _get_or_create_session(user_id)
             logger.info(f"[incident-bot] sess: {sess}")
-            # If they were waiting, auto-link and start the regular flow
+            # If they were waiting, ask permission in the most recent user-initiated thread
             if sess.get("state") == "WAITING_FOR_INCIDENT":
-                _link_issue_to_session(user_id, iso_key_found)
                 dm = _ensure_dm_channel(client, user_id)
                 if dm:
-                    root = client.chat_postMessage(  # type: ignore[attr-defined]
-                        channel=dm,
-                        text=f"{iso_key_found} gekoppeld. Laten we beginnen met de intake.",
-                    )
-                    root_ts = str(root.get("ts") or "")
-                    if root_ts:
-                        say_via_client = _make_say_via_client(client, dm)
-                        _start_preface_flow(dm, root_ts, say_via_client)
+                    # Track as pending for later selection
+                    pending = list(sess.get("pending_incident_keys") or [])
+                    if iso_key_found not in pending:
+                        pending.append(iso_key_found)
+                        sess["pending_incident_keys"] = pending
+                    _ask_link_in_active_user_thread(client, dm, iso_key_found)
                 return
 
             # No session or not waiting: start a DM and create a waiting session with pending
@@ -445,14 +533,15 @@ def build_slack_app() -> SlackApp:
                 return
             _link_issue_to_session(user_id, issue_key)
             dm = _ensure_dm_channel(client, user_id)
-            if dm:
-                root = client.chat_postMessage(  # type: ignore[attr-defined]
-                    channel=dm,
-                    text=f"{issue_key} gekoppeld. Laten we beginnen met de intake.",
-                )
-                root_ts = str(root.get("ts") or "")
-                if root_ts:
-                    _start_preface_flow(dm, root_ts, _make_say_via_client(client, dm))
+            # Prefer replying exactly in the thread where the user clicked
+            container = body.get("container", {}) or {}
+            thread_ts = str(
+                container.get("thread_ts") or container.get("message_ts") or ""
+            )
+            if dm and thread_ts:
+                _reply_in_given_thread_and_continue(client, dm, thread_ts, issue_key)
+            elif dm:
+                _reply_in_active_thread_and_continue(client, dm, issue_key)
         except Exception as e:
             logger.error(f"action_link_incident_confirm error: {e}")
 
@@ -465,45 +554,7 @@ def build_slack_app() -> SlackApp:
                 return
             sess = _get_or_create_session(user_id)
             sess["state"] = "WAITING_FOR_INCIDENT"
-            dm = _ensure_dm_channel(client, user_id)
-            if dm:
-                # Offer a picker with their pending incidents
-                options = [
-                    {"text": {"type": "plain_text", "text": k}, "value": k}
-                    for k in sess.get("pending_incident_keys", [])
-                ]
-                client.chat_postMessage(  # type: ignore[attr-defined]
-                    channel=dm,
-                    text="Kies een incident om te koppelen",
-                    blocks=[
-                        {
-                            "type": "section",
-                            "block_id": "pending_picker",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": "Kies een incident om te koppelen",
-                            },
-                            "accessory": {
-                                "type": "static_select",
-                                "action_id": "pick_pending_incident",
-                                "placeholder": {
-                                    "type": "plain_text",
-                                    "text": "Selecteer incident",
-                                },
-                                "options": options
-                                or [
-                                    {
-                                        "text": {
-                                            "type": "plain_text",
-                                            "text": "Geen incidenten gevonden",
-                                        },
-                                        "value": "NONE",
-                                    }
-                                ],
-                            },
-                        }
-                    ],
-                )
+
         except Exception as e:
             logger.error(f"action_link_incident_decline error: {e}")
 
@@ -518,178 +569,34 @@ def build_slack_app() -> SlackApp:
                 return
             _link_issue_to_session(user_id, issue_key)
             dm = _ensure_dm_channel(client, user_id)
-            if dm:
-                root = client.chat_postMessage(  # type: ignore[attr-defined]
-                    channel=dm,
-                    text=f"{issue_key} gekoppeld. Laten we beginnen met de intake.",
-                )
-                root_ts = str(root.get("ts") or "")
-                if root_ts:
-                    _start_preface_flow(dm, root_ts, _make_say_via_client(client, dm))
+            container = body.get("container", {}) or {}
+            thread_ts = str(
+                container.get("thread_ts") or container.get("message_ts") or ""
+            )
+            if dm and thread_ts:
+                _reply_in_given_thread_and_continue(client, dm, thread_ts, issue_key)
+            elif dm:
+                _reply_in_active_thread_and_continue(client, dm, issue_key)
         except Exception as e:
             logger.error(f"action_pick_pending_incident error: {e}")
 
-    def _format_fields_list(conv: Dict[str, Any]) -> str:
-        """
-        Produce a list of fields and current short previews to assist editing.
+    # _format_fields_list moved to incident_agent.utils
 
-        @param conv: Conversation state with current 'data'.
-        @return str: Multiline list of fields with preview text.
-        """
-        data = conv.get("data", {})
-        lines = ["Fields (use with `edit <field> <value>`):"]
-        for key, label in DUTCH_FIELD_LABELS.items():
-            value = data.get(key)
-            preview = (
-                ""
-                if not isinstance(value, str)
-                else (value.strip()[:80] + ("…" if len(value.strip()) > 80 else ""))
-            )
-            num = label.split(" ")[0]
-            lines.append(f"- {num} | {key}: {preview}")
-        return "\n".join(lines)
+    # moved helpers are now imported from incident_agent.utils
 
-    def _rewrite_with_model(
-        raw_text: str, field_key: str, current_data: Dict[str, Any]
-    ) -> str:
+    def _send_form(thread_ts: str, say) -> None:  # type: ignore
         """
-        Rewrite user input into a concise, clean English sentence using the model.
-
-        @param raw_text: Original user text.
-        @param field_key: Field key the text belongs to.
-        @param current_data: Current conversation data for context (not used for sourcing).
-        @return str: Reformulated text; returns original on error or empty if input blank.
-        """
-        try:
-            label = DUTCH_FIELD_LABELS.get(field_key, field_key)
-            sys = MSG.rewriter_system_prompt()
-            # Als de input leeg of whitespace is, geef leeg terug
-            if not isinstance(raw_text, str) or not raw_text.strip():
-                return ""
-            messages = [
-                {"role": "system", "content": sys},
-                {"role": "user", "content": MSG.rewriter_user_prompt(label, raw_text)},
-            ]
-            print(messages)
-            completion = extractor.client.chat.completions.create(
-                model=extractor.model,
-                messages=messages,
-            )
-            content = completion.choices[0].message.content or ""
-            return content.strip()
-        except Exception as e:
-            logging.error(f"Error rewriting with model: {e}")
-            return raw_text
-
-    def _revise_with_history(
-        field_key: str, history: list[dict], instructions: str
-    ) -> str:
-        """
-        Use the accumulated message history for a single field to produce a refined draft.
-
-        @param field_key: Field being revised.
-        @param history: List of {role, content} messages alternating user/assistant.
-        @param instructions: Latest user instruction to refine the draft.
-        @return str: Revised draft text.
-        """
-        try:
-            if not isinstance(instructions, str) or not instructions.strip():
-                # No instruction; return last assistant content if present
-                for msg in reversed(history):
-                    if msg.get("role") == "assistant":
-                        content = msg.get("content") or ""
-                        return content.strip()
-                return ""
-            label = DUTCH_FIELD_LABELS.get(field_key, field_key)
-            sys = MSG.revision_system_prompt()
-            messages = [{"role": "system", "content": sys}]
-            # Append prior conversation for this field
-            for m in history:
-                role = m.get("role") or "user"
-                content = (m.get("content") or "").strip()
-                if not content:
-                    continue
-                messages.append({"role": role, "content": content})
-            # Append latest instruction as user message
-            messages.append({"role": "user", "content": instructions.strip()})
-            completion = extractor.client.chat.completions.create(
-                model=extractor.model,
-                messages=messages,
-            )
-            content = completion.choices[0].message.content or ""
-            return content.strip()
-        except Exception as e:
-            logging.error(f"Error revising with history: {e}")
-            return instructions
-
-    def _set_pending_with_history(
-        conv: Dict[str, Any], field: str, user_text: str, draft_value: str
-    ) -> None:
-        """
-        Initialize or reset the pending structure for a field with history.
-        """
-        history = [
-            {"role": "user", "content": user_text or ""},
-            {"role": "assistant", "content": draft_value or ""},
-        ]
-        conv["pending"] = {"field": field, "candidate": draft_value, "history": history}
-
-    def _parse_mode_prefix(text: str) -> tuple[Optional[str], str]:
-        """
-        Parse optional 'story'/'literal' prefix from a user message.
-
-        @param text: Raw user input.
-        @return tuple[Optional[str], str]: (forced_mode or None, remaining_text).
-        """
-        s = text.strip()
-        l = s.lower()
-        if l.startswith("story"):
-            rest = s[len("story") :].lstrip(" :")
-            return ("story", rest)
-        if l.startswith("literal"):
-            rest = s[len("literal") :].lstrip(" :")
-            return ("literal", rest)
-        return (None, s)
-
-    def _propose_confirmation_for_field(conv: Dict[str, Any], field: str, thread_ts: str, say) -> None:  # type: ignore
-        """
-        Propose a reformulated value for a field and request user confirmation.
-
-        @param conv: Conversation state dict (mutated with 'pending').
-        @param field: Field key to confirm.
-        @param thread_ts: Slack thread timestamp to reply in.
-        @param say: Slack 'say' function used to send messages.
-        @return None: This function sends a message and mutates state.
-        """
-        current_value = conv.get("data", {}).get(field, "")
-        mode_to_use = conv.get("mode", "story")
-        value = (
-            _rewrite_with_model(str(current_value), field, conv.get("data", {}))
-            if isinstance(current_value, str)
-            and current_value.strip()
-            and mode_to_use == "story"
-            else str(current_value)
-        )
-        _set_pending_with_history(conv, field, str(current_value), value)
-        label = DUTCH_FIELD_LABELS.get(field, field)
-        say(
-            text=MSG.proposal(label, value),
-            thread_ts=thread_ts,
-        )
-
-    def _send_welcome(thread_ts: str, say) -> None:  # type: ignore
-        """
-        Send the welcome content as three consecutive messages.
+        Send the form content as three consecutive messages.
 
         @param thread_ts: Slack thread timestamp to reply in.
         @param say: Slack 'say' function used to send messages.
         @return None
         """
-        say(text=MSG.WELCOME_TEXT_PART_1, thread_ts=thread_ts)
+        say(text=MSG.FORM_TEXT_PART_1, thread_ts=thread_ts)
         time.sleep(2)
-        say(text=MSG.WELCOME_TEXT_PART_2, thread_ts=thread_ts)
+        say(text=MSG.FORM_TEXT_PART_2, thread_ts=thread_ts)
         time.sleep(2)
-        say(text=MSG.WELCOME_TEXT_PART_3, thread_ts=thread_ts)
+        say(text=MSG.FORM_TEXT_PART_3, thread_ts=thread_ts)
 
     def _make_say_via_client(client, channel: str):
         """
@@ -714,7 +621,7 @@ def build_slack_app() -> SlackApp:
         @param say_like: Callable compatible with say(text=..., thread_ts=...)
         @return None
         """
-        _send_welcome(root_ts, say_like)
+        _send_form(root_ts, say_like)
         result = extractor.extract("")
         state[(channel, root_ts)] = {
             "data": result.data.model_dump(),
@@ -737,7 +644,7 @@ def build_slack_app() -> SlackApp:
     def _start_preface_flow(channel: str, root_ts: str, say_like) -> None:
         """
         Begin the flow with PREFACE text and step 1, requiring confirmations
-        through all PREFACE_STEPS before the welcome/questionnaire.
+        through all PREFACE_STEPS before the form/questionnaire.
 
         @param channel: Channel id
         @param root_ts: Thread root timestamp
@@ -750,42 +657,17 @@ def build_slack_app() -> SlackApp:
         say_like(text=MSG.PREFACE_TEXT, thread_ts=root_ts)
         say_like(text=MSG.preface_step_text(1), thread_ts=root_ts)
 
-    def _to_adf(md_text: str) -> Dict[str, Any]:
+    def _send_closeout_with_followup(root_ts: str, say_like) -> None:
         """
-        Convert a lightweight Markdown string into minimal Jira ADF document.
-        """
-        lines = (md_text or "").splitlines()
-        content: list[Dict[str, Any]] = []
-        for line in lines:
-            s = line.rstrip("\n")
-            if s.strip() == "":
-                content.append({"type": "paragraph", "content": []})
-                continue
-            i = 0
-            while i < len(s) and s[i] == "#":
-                i += 1
-            if i > 0 and i <= 6 and i < len(s) and s[i] == " ":
-                heading_text = s[i + 1 :].lstrip()
-                content.append(
-                    {
-                        "type": "heading",
-                        "attrs": {"level": i},
-                        "content": [{"type": "text", "text": heading_text}],
-                    }
-                )
-            else:
-                content.append(
-                    {"type": "paragraph", "content": [{"type": "text", "text": s}]}
-                )
-        if not content:
-            content = [{"type": "paragraph", "content": []}]
-        return {"type": "doc", "version": 1, "content": content}
+        Send the standard closeout message and follow-up steps together.
 
-    def _to_adf_desc(md_text: str) -> Dict[str, Any]:
+        @param root_ts: Thread root timestamp
+        @param say_like: Callable compatible with say(text=..., thread_ts=...)
         """
-        Convert Markdown to ADF specifically for the Jira description field.
-        """
-        return _to_adf(md_text)
+        say_like(text=MSG.no_open_questions_with_jira(), thread_ts=root_ts)
+        say_like(text=MSG.FOLLOWUP_STEPS_TEXT, thread_ts=root_ts)
+
+    # _to_adf and _to_adf_desc moved to incident_agent.utils
 
     def _post_to_jira(conv: Dict[str, Any], event: Dict[str, Any], root_ts: str, say, only_update: bool = False) -> None:  # type: ignore
         """
@@ -953,132 +835,7 @@ def build_slack_app() -> SlackApp:
         except Exception as e:
             say(text=MSG.could_not_create_jira(e), thread_ts=root_ts)
 
-    def _load_usage_text() -> str:
-        """
-        Load `USAGE.md` content for the App Home view.
-
-        @return str: Markdown content or a fallback message if unavailable.
-        """
-        try:
-            # Load USAGE.md from the same directory as this file
-            module_dir = os.path.abspath(os.path.dirname(__file__))
-            usage_path = os.path.join(module_dir, "USAGE.md")
-            with open(usage_path, "r", encoding="utf-8") as f:
-                return f.read()
-        except Exception as e:
-            logging.error(f"Failed to load USAGE.md for App Home: {e}")
-            return "Usage guide unavailable. Make sure USAGE.md exists at the project root."
-
-    def _markdown_to_blocks(md: str) -> list[Dict[str, Any]]:
-        """
-        Convert a markdown string into Slack Block Kit sections, chunked for limits.
-
-        @param md: Markdown input.
-        @return list[Dict[str, Any]]: List of Block Kit block dicts.
-        """
-        # Simplistic Markdown → Block Kit conversion with chunking
-        # - Convert headings (#/##/###/####) to bold lines
-        # - Preserve fenced code blocks
-        # - Group paragraphs into sections, split to <= 2900 chars
-        blocks: list[Dict[str, Any]] = []
-        lines = (md or "").splitlines()
-        in_code = False
-        paragraph_parts: list[str] = []
-
-        def flush_paragraph() -> None:
-            """
-            Flush accumulated paragraph lines into one or more Slack section blocks.
-
-            @return None: Mutates outer 'blocks' with new sections.
-            """
-            if not paragraph_parts:
-                return
-            text = "\n".join(paragraph_parts).strip()
-            if not text:
-                paragraph_parts.clear()
-                return
-            # Split into chunks to respect Slack section text limit (~3000)
-            max_len = 2900
-            start = 0
-            while start < len(text):
-                chunk = text[start : start + max_len]
-                blocks.append(
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": chunk},
-                    }
-                )
-                start += max_len
-            paragraph_parts.clear()
-
-        for raw in lines:
-            s = raw.rstrip("\n")
-            if s.strip().startswith("```"):
-                if in_code:
-                    # Close code block
-                    paragraph_parts.append("```")
-                    in_code = False
-                    flush_paragraph()
-                else:
-                    # Start code block
-                    flush_paragraph()
-                    in_code = True
-                    paragraph_parts.append("```")
-                continue
-            if in_code:
-                paragraph_parts.append(s)
-                continue
-
-            # Headings
-            if s.startswith("#"):
-                flush_paragraph()
-                i = 0
-                while i < len(s) and s[i] == "#":
-                    i += 1
-                heading_text = s[i:].strip()
-                formatted = f"*{heading_text}*" if heading_text else ""
-                if formatted:
-                    blocks.append(
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": formatted},
-                        }
-                    )
-                continue
-
-            # Blank line flushes current paragraph
-            if s.strip() == "":
-                flush_paragraph()
-                continue
-
-            # Regular text
-            paragraph_parts.append(s)
-
-        flush_paragraph()
-        # Cap to 100 blocks to respect Slack limits
-        return blocks[:100]
-
-    def _build_home_view() -> Dict[str, Any]:
-        """
-        Build the App Home view payload with content from `USAGE.md`.
-
-        @return Dict[str, Any]: Slack view payload for the home tab.
-        """
-        md = _load_usage_text()
-        blocks: list[Dict[str, Any]] = []
-        blocks.append(
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": "Security Incident Agent — Usage",
-                    "emoji": True,
-                },
-            }
-        )
-        blocks.append({"type": "divider"})
-        blocks.extend(_markdown_to_blocks(md))
-        return {"type": "home", "blocks": blocks}
+    # App Home rendering helpers moved to incident_agent.utils
 
     @app.event("app_home_opened")
     def update_app_home(event, client, logger):  # type: ignore
@@ -1171,7 +928,6 @@ def build_slack_app() -> SlackApp:
                         ],
                         thread_ts=root_ts,
                     )
-                    sess["state"] = "WAITING_FOR_INCIDENT"
                     return
             # If user types 'start' as a thread reply, initialize and start at question 1
             if has_thread and text in {"start", "/start"}:
@@ -1182,71 +938,18 @@ def build_slack_app() -> SlackApp:
                 print(
                     f"[incident-bot] New DM conversation: channel={channel} root_ts={root_ts} text={text_raw!r}"
                 )
-                state[(channel, root_ts)] = {
-                    "status": "preface",
-                    "preface_index": 1,
-                }
-                say(text=MSG.PREFACE_TEXT, thread_ts=root_ts)
-                say(text=MSG.preface_step_text(1), thread_ts=root_ts)
+                print(sess)
+                _start_preface_flow(channel, root_ts, say)
                 return
             # Otherwise guide the user by starting the preface flow
             if not has_thread:
-                state[(channel, root_ts)] = {
-                    "status": "preface",
-                    "preface_index": 1,
-                }
-                say(text=MSG.PREFACE_TEXT, thread_ts=root_ts)
-                say(text=MSG.preface_step_text(1), thread_ts=root_ts)
+                _start_preface_flow(channel, root_ts, say)
             return
 
-        # Handle preface/welcome confirmation flow
-        if conv.get("status") in {"preface", "welcome"}:
-            # If we are in the welcome state, wait for explicit 'start' to continue to questionnaire
-            if conv.get("status") == "welcome":
-                if text in {"start", "/start"}:
-                    _start_regular_flow(channel, root_ts, say)
-                    return
-                # Otherwise, ignore other input and remind user to type start
-                say(
-                    text=MSG.preface_step_text(len(MSG.PREFACE_STEPS)),
-                    thread_ts=root_ts,
-                )
-                return
-            idx = int(conv.get("preface_index", 1))
-            total = len(MSG.PREFACE_STEPS)
-            # Steps 1-6 require confirmation (yes/ok)
-            if idx < total:
-                if _is_accept(text_raw) or _is_yes(text_raw):
-                    conv["preface_index"] = idx + 1
-                    say(text=MSG.preface_step_text(idx + 1), thread_ts=root_ts)
-                else:
-                    say(text=MSG.preface_step_incomplete(idx), thread_ts=root_ts)
-                return
-            # Step 7 requires 'start' to proceed
-            if text in {"start", "/start"}:
-                _send_welcome(root_ts, say)
-                result = extractor.extract("")
-                state[(channel, root_ts)] = {
-                    "data": result.data.model_dump(),
-                    "questions": [q.model_dump() for q in result.questions],
-                    "index": 0,
-                    "status": "collecting",
-                    "mode": "story",
-                    "pending": None,
-                    "confirm_action": None,
-                }
-                if result.questions:
-                    total = len(result.questions)
-                    say(
-                        text=MSG.first_question(total, _q_display(result.questions[0])),
-                        thread_ts=root_ts,
-                    )
-                else:
-                    say(text=MSG.no_open_questions_short(), thread_ts=root_ts)
-                return
-            else:
-                say(text=MSG.preface_step_text(idx), thread_ts=root_ts)
-                return
+        # Handle preface/form confirmation flow
+        if conv.get("status") in {"preface", "form"}:
+            _handle_chat_flow(conv, text, text_raw, channel, root_ts, say)
+            return
 
         # If we are awaiting a confirmation to proceed with a risky action (finalize/jira)
         confirm_action = conv.get("confirm_action")
@@ -1376,7 +1079,7 @@ def build_slack_app() -> SlackApp:
                 mode_to_use = forced or conv.get("mode", "story")
                 if mode_to_use == "story":
                     value = _rewrite_with_model(
-                        nv_body, key, conv["data"]
+                        extractor, nv_body, key, conv["data"]
                     )  # propose and confirm
                     _set_pending_with_history(conv, key, nv_body, value)
                     label = DUTCH_FIELD_LABELS.get(key, key)
@@ -1416,7 +1119,7 @@ def build_slack_app() -> SlackApp:
                 conv["autofill_queue"] = [f for f in queue if f != field]
                 if conv["autofill_queue"]:
                     _propose_confirmation_for_field(
-                        conv, conv["autofill_queue"][0], root_ts, say
+                        extractor, conv, conv["autofill_queue"][0], root_ts, say
                     )
                     return
                 # Otherwise proceed with the next unanswered question index
@@ -1440,7 +1143,9 @@ def build_slack_app() -> SlackApp:
                         forced, detail_body = _parse_mode_prefix(text_raw)
                         mode_to_use = forced or conv.get("mode", "story")
                         detail_value = (
-                            _rewrite_with_model(detail_body, field, conv["data"])
+                            _rewrite_with_model(
+                                extractor, detail_body, field, conv["data"]
+                            )
                             if mode_to_use == "story"
                             else detail_body
                         )
@@ -1465,7 +1170,7 @@ def build_slack_app() -> SlackApp:
                         conv["autofill_queue"] = [f for f in queue if f != field]
                         if conv["autofill_queue"]:
                             _propose_confirmation_for_field(
-                                conv, conv["autofill_queue"][0], root_ts, say
+                                extractor, conv, conv["autofill_queue"][0], root_ts, say
                             )
                             return
                         next_idx = _compute_next_index(conv, idx)
@@ -1481,7 +1186,9 @@ def build_slack_app() -> SlackApp:
                         return
                     # Story mode: propose and require confirmation
                     value = (
-                        _rewrite_with_model(new_value_body, field, conv["data"])
+                        _rewrite_with_model(
+                            extractor, new_value_body, field, conv["data"]
+                        )
                         if mode_to_use == "story"
                         else new_value_body
                     )
@@ -1492,7 +1199,7 @@ def build_slack_app() -> SlackApp:
                 history = pending.get("history") or []
                 # Append latest user instruction
                 history.append({"role": "user", "content": text_raw})
-                revised = _revise_with_history(field, history, text_raw)
+                revised = _revise_with_history(extractor, field, history, text_raw)
                 # Append assistant result and update pending
                 history.append({"role": "assistant", "content": revised})
                 conv["pending"] = {
@@ -1543,7 +1250,7 @@ def build_slack_app() -> SlackApp:
                                 text=MSG.all_questions_answered_thank_you(),
                                 thread_ts=root_ts,
                             )
-                            say(text=MSG.FOLLOWUP_STEPS_TEXT, thread_ts=root_ts)
+                            _send_closeout_with_followup(root_ts, say)
                         return
                     else:
                         say(
@@ -1553,7 +1260,9 @@ def build_slack_app() -> SlackApp:
                         return
                 else:
                     if mode_to_use == "story":
-                        value = _rewrite_with_model(body_text, field, conv["data"])
+                        value = _rewrite_with_model(
+                            extractor, body_text, field, conv["data"]
+                        )
                         _set_pending_with_history(conv, field, body_text, value)
                         label = DUTCH_FIELD_LABELS.get(field, field)
                         say(text=MSG.proposal(label, value), thread_ts=root_ts)
@@ -1569,16 +1278,11 @@ def build_slack_app() -> SlackApp:
                                 thread_ts=root_ts,
                             )
                         else:
-                            say(
-                                text=MSG.no_open_questions_with_jira(),
-                                thread_ts=root_ts,
-                            )
-                            say(text=MSG.FOLLOWUP_STEPS_TEXT, thread_ts=root_ts)
+                            _send_closeout_with_followup(root_ts, say)
                         return
         else:
             # No questions; suggest finalize
-            say(text=MSG.no_open_questions_with_jira(), thread_ts=root_ts)
-            say(text=MSG.FOLLOWUP_STEPS_TEXT, thread_ts=root_ts)
+            _send_closeout_with_followup(root_ts, say)
             return
 
         # Fallback
