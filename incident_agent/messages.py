@@ -66,6 +66,113 @@ def proceed_or_cancel_instruction() -> str:
     return "Please answer `yes` to proceed or `no` to cancel."
 
 
+# ===== Static help/preface/welcome texts =====
+
+# General help shown in threads (DM)
+HELP_TEXT: str = (
+    "Available commands (DM):\n"
+    "- help: show this help\n"
+    "- status: progress\n"
+    "- show: show current Markdown\n"
+    "- jira: create a Jira issue from the current Markdown\n"
+    "- fields: show field names and numbers\n"
+    "- edit <field> <value>: change a previous answer (field = key, number, or label text)\n"
+    "- mode literal|story: set the input mode\n"
+    "- showmode: show current input mode\n"
+    "- continue: show the next question again\n"
+    "- new <value>: change the current proposal (optionally prefixed with `story:` or `literal:`)\n"
+    "- cancel: cancel this incident thread\n\n"
+    "Tip: prefix `story ...` or `story: ...` or `literal ...` for a one-time choice per answer.\n"
+    "Start: type `start` to begin, then provide a short description.\n"
+    "Finish: type `finalize` in the thread.\n"
+    "Create an issue: type `jira` in the thread.\n"
+    "After each answer we show a proposal; confirm with `yes`/`ok`, provide an alternative with `new <value>`,  or type instructions how to change it."
+)
+
+# Intro text before the preface steps
+PREFACE_TEXT: str = (
+    "*Dealing with security incidents* (e.g. data leak)\n"
+    "A security incident can happen with any project at any time. Do not panic, I will guide you through all the steps you should take to report this issue.\n"
+    "I will show you the steps one by one, and you can confirm with `yes` when you have completed each step.\n\n"
+)
+
+# Preface steps split into confirmable chunks
+PREFACE_STEPS: list[str] = [
+    "Contact the appropriate internal product owner",
+    (
+        "Get approval for containing the incident from the product owner. Make sure the product owner understands the implications of containing the incident. Consider the following options:\n"
+        "  a) If it is a user, block the user.\n"
+        "  b) If it is a connection, block the connection/disconnect\n"
+        "  c) If it is an API key or certificate, revoke it.\n"
+        "  d) If it is an environment or server, shut it down."
+    ),
+    "Secure the data, e.g., make additional copies of logs, databases, etc.",
+    "Fix the problem. If you can fix it, fix it.",
+    (
+        "Assess the damage\n"
+        "  a) Has personal data been leaked?\n"
+        "  b) Has confidential data been leaked?"
+    ),
+    "Write a report: type `start` to start filling out the report together with me",
+]
+
+FOLLOWUP_STEPS_TEXT: str = (
+    "*Reminder: Steps following the incident report*\n"
+    "8. Any resulting issues like tasks and user stories or documents should be linked to the original issue to preserve a chain of events.\n"
+    "9. The product owner will determine additional actions, like\n"
+    "  a) Preventive measures for the future\n"
+    "  b) Changes in manuals and processes\n"
+    "  c) Contact with the client\n"
+    "  d) Reporting the incident to authorities\n"
+    "10. Security incidents will ALWAYS be shown in the Kwaliteit/veiligheidsdashboard and reviewed every LT meeting (Weekly).\n"
+    "11. A final review will be planned in the first LT kwaliteit/veiligheid meeting to come after three months.\n"
+    "12. Evaluation After Incidents Involving External Vendors: After the resolution of an incident in which an external vendor (such as a hosting partner) played a role in the cause or impact, Conduction conducts an evaluation meeting with the client.\n"
+    "During this meeting, the cause, impact, communication, responsibilities, and possible next steps are discussed.\n"
+    "If the client requires a detailed advisory report or redesign proposal, a confirmation of assignment or quotation will be prepared accordingly."
+)
+
+WELCOME_TEXT_PART_1: str = (
+    "I will now help you to quickly and systematically record a security incident.\n\n"
+    "*How it works*:\n"
+    "I will ask short questions so we can complete the incident template together and create a Jira issue.\n\n"
+)
+
+WELCOME_TEXT_PART_2: str = (
+    "*Mode*:\n"
+    "We are in `story` mode: I rewrite your answers into short, clean sentences. In this mode I will first show each rewritten text for your confirmation.\n"
+    "If you want me to take your words literally, switch to `literal` mode with `mode literal` or use a one-off `literal: <answer>`. In `literal` mode your answer is taken as-is without confirmation.\n\n"
+)
+
+WELCOME_TEXT_PART_3: str = (
+    "*Options*:\n"
+    "- `edit`: change previously filled fields with `edit <field> <value>`; for example `edit 2.1 email data leak`\n"
+    "- `show`: show the current Markdown\n"
+    "- `status`: show progress\n"
+    "- `fields`: show available field names and numbers\n"
+    "- `mode literal|story`: switch input mode\n"
+    "- `finalize`: receive the final document\n"
+    "- `jira`: create a Jira issue with the final document as description (and as .md attachment)\n\n"
+)
+
+
+def preface_step_text(step_index: int) -> str:
+    """
+    Render the preface step message for a given 1-based step index using PREFACE_STEPS.
+    """
+    total = len(PREFACE_STEPS)
+    step_index = max(1, min(step_index, total))
+    body = PREFACE_STEPS[step_index - 1]
+    if step_index < total:
+        return (
+            f"*Step {step_index}/{total}*\n{body}\n\n"
+            "Reply `yes` when completed to show the next step."
+        )
+    return (
+        f"*Step {step_index}/{total}*\n{body}\n\n"
+        "Type `start` to begin the incident report."
+    )
+
+
 # ===== LLM prompt templates =====
 
 
@@ -74,16 +181,16 @@ def rewriter_system_prompt() -> str:
     System prompt for rewriting short notes into concise English for a specific field.
     """
     return (
-            "You are an assistant that transforms short notes into clear, professional, and neutral narrative text in English."  
-            "Strict rules:"
-            "(1) Use ONLY the 'Input' section as the source. Do NOT add facts or details that are not explicitly in the input."  
-            "(2) Reformulate into smooth, natural sentences that flow well, while staying factual and precise."  
-            "(3) It is allowed to add connecting words or stylistic phrasing to improve readability, but not to introduce new content (no hallucinations)."  
-            "(4) Do not enrich the output with outside information."  
-            "(5) Return only the reformulated text, without explanations or labels."  
-            "(6) Make sure all relevant facts from the input remain intact."  
-            "(7) Do not repeat the field name in the output."
-            "(8) The tone should be professional, neutral, and narrative — as if summarizing an incident or report in a clear manner."
+        "You are an assistant that transforms short notes into clear, professional, and neutral narrative text in English."
+        "Strict rules:"
+        "(1) Use ONLY the 'Input' section as the source. Do NOT add facts or details that are not explicitly in the input."
+        "(2) Reformulate into smooth, natural sentences that flow well, while staying factual and precise."
+        "(3) It is allowed to add connecting words or stylistic phrasing to improve readability, but not to introduce new content (no hallucinations)."
+        "(4) Do not enrich the output with outside information."
+        "(5) Return only the reformulated text, without explanations or labels."
+        "(6) Make sure all relevant facts from the input remain intact."
+        "(7) Do not repeat the field name in the output."
+        "(8) The tone should be professional, neutral, and narrative — as if summarizing an incident or report in a clear manner."
     )
 
 
@@ -237,3 +344,95 @@ FIXED_QUESTIONS: Dict[str, str] = {
     ),
 }
 
+# ===== Small helpers for dynamic Slack messages =====
+
+
+def first_question(total: int, question_display: str) -> str:
+    return f"*Question 1/{total}*\n{question_display}"
+
+
+def preface_step_incomplete(step_index: int) -> str:
+    return f"Please complete step {step_index} and reply `yes` to continue."
+
+
+def not_proceeding() -> str:
+    return "Okay, not proceeding."
+
+
+def final_document(md: str) -> str:
+    return f"""Final document:
+```
+{md}
+```
+"""
+
+
+def current_markdown(md: str) -> str:
+    return f"""Current Markdown:
+```
+{md}
+```
+"""
+
+
+def could_not_generate_final_document(error: object) -> str:
+    return f"Could not generate the final document: {error}"
+
+
+def jira_created(key: str) -> str:
+    return f"Jira issue created: {key}"
+
+
+def could_not_create_jira(error: object) -> str:
+    return f"Could not create Jira issue: {error}"
+
+
+def jira_updated(key: str) -> str:
+    return f"Jira issue updated: {key}"
+
+
+def input_mode_set(choice: str) -> str:
+    return f"Input mode set to: {choice}"
+
+
+def usage_mode() -> str:
+    return "Usage: mode literal|story"
+
+
+def current_input_mode(mode: str) -> str:
+    return f"Current input mode: {mode}"
+
+
+def unknown_field(field_token: str) -> str:
+    return f"Unknown field `{field_token}`. Use `fields` to see available fields."
+
+
+def proposal_edit(label: str, value: str) -> str:
+    return (
+        f"Proposal for {label}:\n{value}\n\n"
+        "Confirm with `yes`/`ok`, provide an alternative via `new <value>` (optional `new literal:` or `new story:`), or type instructions how to change it.."
+    )
+
+
+def changed_field(key: str) -> str:
+    return f"Changed: {key}"
+
+
+def usage_edit_example() -> str:
+    return "Usage: edit <field> <value>. Example: edit beschrijving_afwijking story: There is a data leak..."
+
+
+def incident_canceled() -> str:
+    return "Incident canceled. Send a new description to start again."
+
+
+def need_risk_assessment_detail() -> str:
+    return "You answered `yes`. Now provide the outcome/explanation, for example: `Agreed that ...`."
+
+
+def all_questions_answered_thank_you() -> str:
+    return "Thank you. All questions answered. Send `finalize` to finish."
+
+
+def could_not_process_message() -> str:
+    return "I could not process your message. Type `help` for assistance or reply in the thread to the question."
