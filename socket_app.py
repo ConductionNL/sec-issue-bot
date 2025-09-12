@@ -112,6 +112,18 @@ def build_slack_app() -> SlackApp:
             return None
         return None
 
+    def _get_session_for_channel(channel_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve a user's session from their DM channel id, if available.
+        """
+        try:
+            for sess in SESSIONS.values():
+                if sess.get("dm_channel") == channel_id:
+                    return sess
+        except Exception:
+            return None
+        return None
+
     def _handle_chat_flow(
         conv: Dict[str, Any],
         text: str,
@@ -119,6 +131,7 @@ def build_slack_app() -> SlackApp:
         channel: str,
         root_ts: str,
         say: Callable[[str, str], None],
+        client,
     ) -> None:
         # If we are in the form state, wait for explicit 'start' to continue to questionnaire
         if conv.get("status") == "form":
@@ -126,8 +139,9 @@ def build_slack_app() -> SlackApp:
                 _start_regular_flow(channel, root_ts, say)
                 return
             # Otherwise, ignore other input and remind user to type start
+            sess = _get_session_for_channel(channel)
             say(
-                text=MSG.preface_step_text(len(MSG.PREFACE_STEPS)),
+                text=MSG.preface_step_text(len(MSG.PREFACE_STEPS), sess),
                 thread_ts=root_ts,
             )
             return
@@ -137,7 +151,37 @@ def build_slack_app() -> SlackApp:
         if idx < total:
             if utils.is_accept(text_raw) or utils.is_yes(text_raw):
                 conv["preface_index"] = idx + 1
-                say(text=MSG.preface_step_text(idx + 1), thread_ts=root_ts)
+                sess = _get_session_for_channel(channel)
+                if (idx + 1) == 2:
+                    # If advancing to step 2 (index=1) and there is no linked issue, attach the image first
+                    try:
+                        has_linked_issue = bool((sess or {}).get("linked_issue_key"))
+                    except Exception:
+                        has_linked_issue = False
+                    if not has_linked_issue:
+                        try:
+                            import os
+
+                            image_path = os.path.join(
+                                os.path.dirname(os.path.abspath(__file__)),
+                                "incident_agent",
+                                "security_incident.png",
+                            )
+                            if os.path.exists(image_path):
+                                try:
+                                    client.files_upload_v2(  # type: ignore[attr-defined]
+                                        channel=channel,
+                                        thread_ts=root_ts,
+                                        file=image_path,
+                                        filename="security_incident.png",
+                                        title="Security incident guidance",
+                                    )
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                # Send the step message after optional image upload
+                say(text=MSG.preface_step_text(idx + 1, sess), thread_ts=root_ts)
             else:
                 say(text=MSG.preface_step_incomplete(idx), thread_ts=root_ts)
             return
@@ -146,7 +190,8 @@ def build_slack_app() -> SlackApp:
             _start_regular_flow(channel, root_ts, say)
             return
         else:
-            say(text=MSG.preface_step_text(idx), thread_ts=root_ts)
+            sess = _get_session_for_channel(channel)
+            say(text=MSG.preface_step_text(idx, sess), thread_ts=root_ts)
             return
 
     def _reconstruct_last_message_from_state(
@@ -173,10 +218,11 @@ def build_slack_app() -> SlackApp:
             except Exception:
                 preface_idx = 1
             total_steps = len(MSG.PREFACE_STEPS)
+            sess = _get_session_for_channel(channel)
             if status == "form":
                 # During the form gate, remind the final preface step which instructs to type start
-                say(text=MSG.preface_step_text(total_steps), thread_ts=root_ts)
-            say(text=MSG.preface_step_text(preface_idx), thread_ts=root_ts)
+                say(text=MSG.preface_step_text(total_steps, sess), thread_ts=root_ts)
+            say(text=MSG.preface_step_text(preface_idx, sess), thread_ts=root_ts)
 
         pending = conv.get("pending") or {}
         if isinstance(pending, dict) and pending.get("field"):
@@ -324,7 +370,7 @@ def build_slack_app() -> SlackApp:
         """
         root_ts = _find_most_recent_user_thread(client, dm_channel) or ""
         try:
-            prompt_text = f"Er is een link gedeeld voor {issue_key}. Wil je dit incident koppelen aan dit gesprek?"
+            prompt_text = f"A new ISO issue had been reported :{issue_key}. Do you want to link this incident to this conversation?"
             blocks = [
                 {
                     "type": "section",
@@ -485,8 +531,8 @@ def build_slack_app() -> SlackApp:
                     client.chat_postMessage(  # type: ignore[attr-defined]
                         channel=dm,
                         text=(
-                            f"Je hebt zojuist een beveiligingsincident gemeld voor issue {iso_key_found}. "
-                            "Laten we samen de intake afronden. Wil je dit incident nu koppelen aan dit gesprek?"
+                            f"You just reported a secuirt incident in issue {iso_key_found}. "
+                            "Do you want to go through the full security incident handling process together?"
                         ),
                         blocks=[
                             {
@@ -494,8 +540,8 @@ def build_slack_app() -> SlackApp:
                                 "text": {
                                     "type": "mrkdwn",
                                     "text": (
-                                        f"Je hebt zojuist een beveiligingsincident gemeld voor issue *{iso_key_found}*.\n"
-                                        "Wil je dit incident nu koppelen aan dit gesprek?"
+                                        f"You just reported a secuirt incident in issue *{iso_key_found}*.\n"
+                                        "Do you want to go through the full security incident handling process together?"
                                     ),
                                 },
                             },
@@ -506,7 +552,7 @@ def build_slack_app() -> SlackApp:
                                         "type": "button",
                                         "text": {
                                             "type": "plain_text",
-                                            "text": "Ja, koppel dit incident",
+                                            "text": "Yes, start the process",
                                         },
                                         "style": "primary",
                                         "action_id": "link_incident_confirm",
@@ -516,7 +562,7 @@ def build_slack_app() -> SlackApp:
                                         "type": "button",
                                         "text": {
                                             "type": "plain_text",
-                                            "text": "Nee, later kiezen",
+                                            "text": "No thank you",
                                         },
                                         "action_id": "link_incident_decline",
                                         "value": iso_key_found,
@@ -720,7 +766,8 @@ def build_slack_app() -> SlackApp:
             "preface_index": 1,
         }
         say_like(text=MSG.PREFACE_TEXT, thread_ts=root_ts)
-        say_like(text=MSG.preface_step_text(1), thread_ts=root_ts)
+        sess = _get_session_for_channel(channel)
+        say_like(text=MSG.preface_step_text(1, sess), thread_ts=root_ts)
 
     def _send_closeout_with_followup(root_ts: str, say_like) -> None:
         """
@@ -912,15 +959,16 @@ def build_slack_app() -> SlackApp:
                     _start_regular_flow(channel, root_ts, say)
                     return
                 else:
+                    sess = _get_or_create_session(user_id)
                     say(
-                        text=MSG.preface_step_text(len(MSG.PREFACE_STEPS)),
+                        text=MSG.preface_step_text(len(MSG.PREFACE_STEPS), sess),
                         thread_ts=root_ts,
                     )
                     return
 
         # Handle preface/form confirmation flow
         if conv.get("status") in {"preface", "form"}:
-            _handle_chat_flow(conv, text, text_raw, channel, root_ts, say)
+            _handle_chat_flow(conv, text, text_raw, channel, root_ts, say, client)
             return
 
         # If we are awaiting a confirmation to proceed with a risky action (finalize/jira)
