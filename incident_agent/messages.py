@@ -1,5 +1,10 @@
 from __future__ import annotations
 from typing import Dict
+from typing import Any, Optional
+
+from .schema import IncidentTemplate
+from .render import render_markdown
+from . import utils
 
 
 # ===== Slack/User-facing message builders =====
@@ -436,3 +441,126 @@ def all_questions_answered_thank_you() -> str:
 
 def could_not_process_message() -> str:
     return "I could not process your message. Type `help` for assistance or reply in the thread to the question."
+
+
+# ===== Jira post creation helpers =====
+
+
+def create_jira_post(conv: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build the Jira description, attachment markdown, and extra custom fields
+    from the current conversation state.
+
+    Returns a dict with keys:
+      - md: full markdown document to attach
+      - description_text: short description text (Section 1 only)
+      - extra_fields: mapping for customfield_10061/10062/10063 with ADF content
+    """
+    template = IncidentTemplate(**conv.get("data", {}))
+    md = render_markdown(template)
+    d = template.model_dump()
+
+    def val(key: str) -> str:
+        v = d.get(key)
+        return v.strip() if isinstance(v, str) else ""
+
+    # Description: Section 1 only
+    desc_text_lines: list[str] = []
+    if val("beschrijving_afwijking"):
+        desc_text_lines.append("# 1. Beschrijving afwijking")
+        desc_text_lines.append(val("beschrijving_afwijking"))
+    description_text = "\n".join(desc_text_lines) if desc_text_lines else ""
+
+    # Section 2 → customfield_10061
+    sec2_lines: list[str] = []
+    if any(
+        val(k)
+        for k in [
+            "maatregelen_beheersen_corrigeren",
+            "aanpassen_consequenties",
+            "risicoafweging",
+        ]
+    ):
+        sec2_lines.append("# 2. Measures")
+        if val("maatregelen_beheersen_corrigeren"):
+            sec2_lines.append("## 2.1 Measures to control and correct the deviation")
+            sec2_lines.append(val("maatregelen_beheersen_corrigeren"))
+        if val("aanpassen_consequenties"):
+            sec2_lines.append("## 2.2 Adjust consequences")
+            sec2_lines.append(val("aanpassen_consequenties"))
+        if val("risicoafweging"):
+            sec2_lines.append(
+                "## 2.3 Risk assessment If the deviation is of such a nature, a risk assessment must be made. Contact Mark, holder of the risk inventory"
+            )
+            sec2_lines.append(val("risicoafweging"))
+    sec2_text = "\n".join(sec2_lines)
+
+    # Section 3 → customfield_10062
+    sec3_lines: list[str] = []
+    if any(
+        val(k)
+        for k in [
+            "oorzaak_ontstaan",
+            "gevolgen",
+            "oorzaak_wegnemen",
+            "elders_voorgedaan",
+            "acties_elders",
+        ]
+    ):
+        sec3_lines.append("# 3. Analysis and removing causes")
+        if val("oorzaak_ontstaan"):
+            sec3_lines.append("## 3.1 Cause of the deviation")
+            sec3_lines.append(val("oorzaak_ontstaan"))
+        if val("gevolgen"):
+            sec3_lines.append("## 3.2 Consequences of the deviation")
+            sec3_lines.append(val("gevolgen"))
+        if val("oorzaak_wegnemen"):
+            sec3_lines.append("## 3.3 Remove cause")
+            sec3_lines.append(val("oorzaak_wegnemen"))
+        if val("elders_voorgedaan"):
+            sec3_lines.append("## 3.4 Could the deviation have occurred elsewhere")
+            sec3_lines.append(val("elders_voorgedaan"))
+        if val("acties_elders"):
+            sec3_lines.append("## 3.5 Actions on deviation that occurred elsewhere")
+            sec3_lines.append(val("acties_elders"))
+    sec3_text = "\n".join(sec3_lines)
+
+    # Section 4 → customfield_10063
+    sec4_lines: list[str] = []
+    if any(
+        val(k)
+        for k in [
+            "doeltreffendheid",
+            "actualisatie_risico",
+            "aanpassing_kwaliteitssysteem",
+        ]
+    ):
+        sec4_lines.append(
+            "# 4. Assessment of measures taken This chapter will be filled once the JIRA actions are completed."
+        )
+        if val("doeltreffendheid"):
+            sec4_lines.append("## 4.1 Effectiveness of the measures taken")
+            sec4_lines.append(val("doeltreffendheid"))
+        if val("actualisatie_risico"):
+            sec4_lines.append(
+                "## 4.2 Update of risk inventory based on deviation (if applicable)"
+            )
+            sec4_lines.append(val("actualisatie_risico"))
+        if val("aanpassing_kwaliteitssysteem"):
+            sec4_lines.append("## 4.3 Adjustment to quality system (if applicable)")
+            sec4_lines.append(val("aanpassing_kwaliteitssysteem"))
+    sec4_text = "\n".join(sec4_lines)
+
+    extra_fields: Dict[str, Any] = {}
+    if sec2_text:
+        extra_fields["customfield_10061"] = utils.to_adf(sec2_text)
+    if sec3_text:
+        extra_fields["customfield_10062"] = utils.to_adf(sec3_text)
+    if sec4_text:
+        extra_fields["customfield_10063"] = utils.to_adf(sec4_text)
+
+    return {
+        "md": md,
+        "description_text": description_text,
+        "extra_fields": extra_fields,
+    }

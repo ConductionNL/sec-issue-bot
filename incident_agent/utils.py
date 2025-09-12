@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from incident_agent.schema import DUTCH_FIELD_LABELS
 from incident_agent import messages as MSG
-from incident_agent.extract import IncidentExtractor
+
+if TYPE_CHECKING:  # Avoid runtime import to prevent circular dependency
+    from incident_agent.extract import IncidentExtractor
 
 
 # =========================

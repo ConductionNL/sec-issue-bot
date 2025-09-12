@@ -37,7 +37,9 @@ class JiraClient:
         self.password: str = (os.getenv("JIRA_PASSWORD") or "").strip()
         self.pat: str = (os.getenv("JIRA_PAT") or "").strip()
         self.project_key: str = (os.getenv("JIRA_PROJECT_KEY") or "").strip()
-        self.issue_type: str = (os.getenv("JIRA_ISSUE_TYPE") or "Task").strip() or "Task"
+        self.issue_type: str = (
+            os.getenv("JIRA_ISSUE_TYPE") or "Task"
+        ).strip() or "Task"
         self.issue_type_id: str = (os.getenv("JIRA_ISSUE_TYPE_ID") or "").strip()
         self._api_version_selected: str | None = None
         self._api_versions = ["3", "2", "latest"]
@@ -94,7 +96,12 @@ class JiraClient:
                 seen.add(b)
         return candidates
 
-    def create_issue(self, summary: Optional[str], description: str, extra_fields: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def create_issue(
+        self,
+        summary: Optional[str],
+        description: str,
+        extra_fields: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Create a Jira issue with a minimal ADF description and optional extra fields.
 
@@ -103,6 +110,7 @@ class JiraClient:
         @param extra_fields: Optional additional fields payload to merge.
         @return Dict[str, Any]: JSON response of the created issue.
         """
+
         def _description_to_adf(md_text: str) -> Dict[str, Any]:
             """
             Convert Markdown-ish text into a minimal Jira ADF document.
@@ -120,20 +128,21 @@ class JiraClient:
                     continue
                 # Detect heading syntax: one or more # followed by space
                 i = 0
-                while i < len(s) and s[i] == '#':
+                while i < len(s) and s[i] == "#":
                     i += 1
-                if i > 0 and i <= 6 and i < len(s) and s[i] == ' ':
+                if i > 0 and i <= 6 and i < len(s) and s[i] == " ":
                     heading_text = s[i + 1 :].lstrip()
-                    content.append({
-                        "type": "heading",
-                        "attrs": {"level": i},
-                        "content": [{"type": "text", "text": heading_text}],
-                    })
+                    content.append(
+                        {
+                            "type": "heading",
+                            "attrs": {"level": i},
+                            "content": [{"type": "text", "text": heading_text}],
+                        }
+                    )
                 else:
-                    content.append({
-                        "type": "paragraph",
-                        "content": [{"type": "text", "text": s}]
-                    })
+                    content.append(
+                        {"type": "paragraph", "content": [{"type": "text", "text": s}]}
+                    )
             if not content:
                 content = [{"type": "paragraph", "content": []}]
             return {"type": "doc", "version": 1, "content": content}
@@ -142,7 +151,11 @@ class JiraClient:
         fields: Dict[str, Any] = {
             "project": {"key": self.project_key},
             "description": adf_description,
-            "issuetype": ({"id": self.issue_type_id} if self.issue_type_id else {"name": self.issue_type}),
+            "issuetype": (
+                {"id": self.issue_type_id}
+                if self.issue_type_id
+                else {"name": self.issue_type}
+            ),
         }
         if isinstance(summary, str) and summary.strip():
             fields["summary"] = summary.strip()[:255]
@@ -151,7 +164,9 @@ class JiraClient:
             # Merge additional fields (e.g., customfield_10061) into fields payload
             payload["fields"].update(extra_fields)
         # Try v3, then v2 if 404
-        versions_to_try = [self._api_version_selected] if self._api_version_selected else []
+        versions_to_try = (
+            [self._api_version_selected] if self._api_version_selected else []
+        )
         versions_to_try += [v for v in self._api_versions if v not in versions_to_try]
         # Try with possible context paths: given base_url, and base_url + '/jira' if not already containing it
         base_candidates = self._candidate_bases()
@@ -159,16 +174,22 @@ class JiraClient:
         for base in base_candidates:
             for ver in versions_to_try:
                 url = f"{base.rstrip('/')}/rest/api/{ver}/issue"
-                resp = self._session.post(url, json=payload, timeout=30, allow_redirects=False)
+                resp = self._session.post(
+                    url, json=payload, timeout=30, allow_redirects=False
+                )
                 snippet = resp.text[:300] if resp.text else ""
                 if 300 <= resp.status_code < 400:
                     loc = resp.headers.get("Location", "")
-                    raise RuntimeError(f"Jira create issue received redirect ({resp.status_code}) to {loc}. This usually indicates authentication failure. Verify credentials for {url}.")
+                    raise RuntimeError(
+                        f"Jira create issue received redirect ({resp.status_code}) to {loc}. This usually indicates authentication failure. Verify credentials for {url}."
+                    )
                 if resp.status_code == 404:
                     attempts.append((url, resp.status_code, snippet))
                     continue
                 if resp.status_code >= 400:
-                    raise RuntimeError(f"Jira create issue failed: {resp.status_code} {snippet}")
+                    raise RuntimeError(
+                        f"Jira create issue failed: {resp.status_code} {snippet}"
+                    )
                 # success
                 self.base_url = base
                 self._api_version_selected = ver
@@ -176,7 +197,9 @@ class JiraClient:
         # If we got here, all tried versions failed with 404
         detail = "; ".join([f"{u} -> {s}" for (u, s, _t) in attempts])
         last_snippet = attempts[-1][2] if attempts else ""
-        raise RuntimeError(f"Jira create issue failed with 404 on all versions ({detail}). Last response snippet: {last_snippet}")
+        raise RuntimeError(
+            f"Jira create issue failed with 404 on all versions ({detail}). Last response snippet: {last_snippet}"
+        )
 
     def update_issue(self, issue_key: str, fields: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -188,32 +211,44 @@ class JiraClient:
         """
         if not isinstance(fields, dict) or not fields:
             return {"updated": False, "reason": "no fields supplied"}
-        versions_to_try = [self._api_version_selected] if self._api_version_selected else []
+        versions_to_try = (
+            [self._api_version_selected] if self._api_version_selected else []
+        )
         versions_to_try += [v for v in self._api_versions if v not in versions_to_try]
         base_candidates = self._candidate_bases()
         attempts: list[tuple[str, int, str]] = []
         for base in base_candidates:
             for ver in versions_to_try:
                 url = f"{base.rstrip('/')}/rest/api/{ver}/issue/{issue_key}"
-                resp = self._session.put(url, json={"fields": fields}, timeout=30, allow_redirects=False)
+                resp = self._session.put(
+                    url, json={"fields": fields}, timeout=30, allow_redirects=False
+                )
                 snippet = resp.text[:300] if resp.text else ""
                 if 300 <= resp.status_code < 400:
                     loc = resp.headers.get("Location", "")
-                    raise RuntimeError(f"Jira update received redirect ({resp.status_code}) to {loc}. This usually indicates authentication failure. Verify credentials for {url}.")
+                    raise RuntimeError(
+                        f"Jira update received redirect ({resp.status_code}) to {loc}. This usually indicates authentication failure. Verify credentials for {url}."
+                    )
                 if resp.status_code == 404:
                     attempts.append((url, resp.status_code, snippet))
                     continue
                 if resp.status_code >= 400:
-                    raise RuntimeError(f"Jira update failed: {resp.status_code} {snippet}")
+                    raise RuntimeError(
+                        f"Jira update failed: {resp.status_code} {snippet}"
+                    )
                 # success
                 self.base_url = base
                 self._api_version_selected = ver
                 return {"updated": True}
         detail = "; ".join([f"{u} -> {s}" for (u, s, _t) in attempts])
         last_snippet = attempts[-1][2] if attempts else ""
-        raise RuntimeError(f"Jira update failed with 404 on all versions ({detail}). Last response snippet: {last_snippet}")
+        raise RuntimeError(
+            f"Jira update failed with 404 on all versions ({detail}). Last response snippet: {last_snippet}"
+        )
 
-    def attach_markdown(self, issue_key: str, filename: str, content: str) -> Optional[Any]:
+    def attach_markdown(
+        self, issue_key: str, filename: str, content: str
+    ) -> Optional[Any]:
         """
         Attach a markdown file as an attachment to a Jira issue.
 
@@ -224,23 +259,31 @@ class JiraClient:
         """
         headers = {"X-Atlassian-Token": "no-check"}
         files = {"file": (filename, content.encode("utf-8"), "text/markdown")}
-        versions_to_try = [self._api_version_selected] if self._api_version_selected else []
+        versions_to_try = (
+            [self._api_version_selected] if self._api_version_selected else []
+        )
         versions_to_try += [v for v in self._api_versions if v not in versions_to_try]
         base_candidates = self._candidate_bases()
         attempts: list[tuple[str, int, str]] = []
         for base in base_candidates:
             for ver in versions_to_try:
                 url = f"{base.rstrip('/')}/rest/api/{ver}/issue/{issue_key}/attachments"
-                resp = self._session.post(url, headers=headers, files=files, timeout=30, allow_redirects=False)
+                resp = self._session.post(
+                    url, headers=headers, files=files, timeout=30, allow_redirects=False
+                )
                 snippet = resp.text[:300] if resp.text else ""
                 if 300 <= resp.status_code < 400:
                     loc = resp.headers.get("Location", "")
-                    raise RuntimeError(f"Jira attach received redirect ({resp.status_code}) to {loc}. This usually indicates authentication failure. Verify credentials for {url}.")
+                    raise RuntimeError(
+                        f"Jira attach received redirect ({resp.status_code}) to {loc}. This usually indicates authentication failure. Verify credentials for {url}."
+                    )
                 if resp.status_code == 404:
                     attempts.append((url, resp.status_code, snippet))
                     continue
                 if resp.status_code >= 400:
-                    raise RuntimeError(f"Jira attach failed: {resp.status_code} {snippet}")
+                    raise RuntimeError(
+                        f"Jira attach failed: {resp.status_code} {snippet}"
+                    )
                 try:
                     # Persist selected base/version on success
                     self.base_url = base
@@ -250,5 +293,6 @@ class JiraClient:
                     return None
         detail = "; ".join([f"{u} -> {s}" for (u, s, _t) in attempts])
         last_snippet = attempts[-1][2] if attempts else ""
-        raise RuntimeError(f"Jira attach failed with 404 on all versions ({detail}). Last response snippet: {last_snippet}")
-
+        raise RuntimeError(
+            f"Jira attach failed with 404 on all versions ({detail}). Last response snippet: {last_snippet}"
+        )
