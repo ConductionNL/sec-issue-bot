@@ -48,3 +48,73 @@ uv run python socket_app.py
 - Minimal Jira REST integration to create issues and attach the generated Markdown
 
 This app runs via Slack Socket Mode; no public HTTP endpoint is needed.
+
+### Deployment
+
+This repository includes a build-and-publish workflow to GHCR and a Helm chart for Kubernetes, modeled after the deployment guide in `docs/DEPLOYMENT.md` but adapted for a Slack Socket Mode bot (no Service/Ingress).
+
+#### 1) Build and publish container (GitHub Actions → GHCR)
+- Push to `main`, `master`, or `helm` or trigger the workflow manually in GitHub Actions: `Publish Docker image to GHCR`.
+- The image will be published to `ghcr.io/<owner>/sec-issue-bot` with semver, branch, SHA, and `latest` (on the default branch) tags.
+- If you want the cluster to pull without credentials, set the GHCR package to Public under the repo owner’s Packages → `sec-issue-bot` → Settings → Visibility.
+
+Private images: create an imagePullSecret and reference it in Helm values.
+```bash
+kubectl -n <namespace> create secret docker-registry ghcr-creds \
+  --docker-server=ghcr.io \
+  --docker-username=<github-username> \
+  --docker-password=<personal-access-token-with-read:packages>
+```
+
+#### 2) Kubernetes secrets (required)
+Create a Secret with your runtime credentials. Minimum required keys:
+```bash
+kubectl -n <namespace> create secret generic sec-issue-bot-secrets \
+  --from-literal=OPENAI_API_KEY=... \
+  --from-literal=SLACK_BOT_TOKEN=xoxb-... \
+  --from-literal=SLACK_APP_TOKEN=xapp-... \
+  --from-literal=JIRA_URL=https://your-domain.atlassian.net \
+  --from-literal=JIRA_EMAIL=you@example.com \
+  --from-literal=JIRA_API_TOKEN=...
+```
+Optional keys: `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE`.
+
+#### 3) Helm install/upgrade
+The chart is located at `charts/sec-issue-bot`. Because this app uses Slack Socket Mode, it does not expose a Service or Ingress.
+```bash
+helm upgrade --install sec-issue-bot charts/sec-issue-bot \
+  --namespace <namespace> --create-namespace \
+  --set image.repository=ghcr.io/<owner>/sec-issue-bot \
+  --set image.tag=latest \
+  --set secretRef=sec-issue-bot-secrets
+
+# If your GHCR image is private, also set imagePullSecrets
+# --set imagePullSecrets='[{name: ghcr-creds}]'
+```
+
+Logs:
+```bash
+kubectl -n <namespace> logs deploy/<release>-sec-issue-bot
+```
+
+#### 4) ArgoCD (optional)
+Configure an Application pointing to this repo and path `charts/sec-issue-bot`.
+- repoURL: `https://github.com/ConductionNL/sec-issue-bot.git`
+- revision: your branch (e.g., `main`)
+- path: `charts/sec-issue-bot`
+- namespace: your target namespace (enable Create Namespace)
+- values: set `image.repository`, `image.tag` and `secretRef`; if private image, set `imagePullSecrets`.
+
+Example values override:
+```yaml
+image:
+  repository: ghcr.io/ConductionNL/sec-issue-bot
+  tag: latest
+secretRef: sec-issue-bot-secrets
+# imagePullSecrets:
+#   - name: ghcr-creds
+```
+
+Notes
+- The container runs `python -u socket_app.py` and establishes an outbound websocket to Slack (no inbound HTTP).
+- Ensure egress to Slack is permitted by your cluster/network policies.

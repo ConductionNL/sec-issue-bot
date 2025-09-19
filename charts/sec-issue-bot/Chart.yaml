@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sec-issue-bot
+description: Helm chart for the Security Incident Slack bot (Socket Mode)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
