@@ -9,7 +9,14 @@ description = "Slack incident handling agent"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Conduction" }]
-dependencies = []
+dependencies = [
+    "openai>=1.40.0",
+    "pydantic>=2.8.2",
+    "python-dotenv>=1.0.1",
+    "slack-bolt>=1.19.0",
+    "slack-sdk>=3.27.1",
+    "requests>=2.32.3",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

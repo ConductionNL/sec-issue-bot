@@ -3,10 +3,13 @@
 This minimal app extracts incident details, asks follow-ups, and runs in Slack Socket Mode. Users interact via Direct Messages only.
 
 #### Setup
-1. Create and activate a virtual environment (optional)
-2. Install dependencies:
+1. (Optional) Create and activate a virtual environment
+2. Install dependencies with uv:
 ```bash
-pip install -r requirements.txt
+# install uv (if not installed yet)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# install project dependencies
+uv sync
 ```
 3. Provide secrets in `.env`:
 ```bash
@@ -23,7 +26,7 @@ JIRA_ISSUE_TYPE=Task
 
 #### Run (Socket Mode)
 ```bash
-python socket_app.py
+uv run python socket_app.py
 ```
 - In your Slack app config:
   - Enable Socket Mode

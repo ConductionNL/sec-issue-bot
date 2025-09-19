@@ -2,20 +2,33 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
- # Install project deps first to leverage Docker layer caching
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv (fast Python package manager)
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Copy project metadata first for better Docker layer caching
+COPY pyproject.toml ./
+# If present, include lock file for reproducible builds
+COPY uv.lock* ./
+
+# Sync dependencies (no dev deps by default)
+RUN uv sync --frozen --no-install-project || uv sync --no-install-project
 
 # Copy application code
 COPY . .
 
-# Install the package (src/ layout)
-RUN pip install --no-cache-dir .
+# Install the project itself into the virtual environment
+RUN uv sync
+
+# Ensure the venv is used at runtime
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 # Run as non-root user for safety
 RUN useradd -m appuser && chown -R appuser /app
