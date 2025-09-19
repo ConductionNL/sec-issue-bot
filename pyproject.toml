@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conduction-incident-agent"
+version = "0.1.0"
+description = "Slack incident handling agent"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Conduction" }]
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["incident_agent*"]
+
+[tool.setuptools.package-data]
+incident_agent = ["security_incident.png"]
+

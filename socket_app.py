@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import importlib.resources as importlib_resources
 import logging
 from typing import Any, Dict, Tuple, Optional, Callable
 import re
@@ -160,13 +161,20 @@ def build_slack_app() -> SlackApp:
                         has_linked_issue = False
                     if not has_linked_issue:
                         try:
-                            import os
-
-                            image_path = os.path.join(
-                                os.path.dirname(os.path.abspath(__file__)),
-                                "incident_agent",
-                                "security_incident.png",
-                            )
+                            try:
+                                # Prefer loading image from installed package resources
+                                image_path = str(
+                                    importlib_resources.files("incident_agent")
+                                    .joinpath("security_incident.png")
+                                )
+                            except Exception:
+                                # Fallback to repo-relative path during local dev
+                                image_path = os.path.join(
+                                    os.path.dirname(os.path.abspath(__file__)),
+                                    "src",
+                                    "incident_agent",
+                                    "security_incident.png",
+                                )
                             if os.path.exists(image_path):
                                 try:
                                     client.files_upload_v2(  # type: ignore[attr-defined]

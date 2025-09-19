@@ -1,1 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.env.*
+.python-version
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+test.ipynb
+
+# Editors/OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+bot.log
+
+# Docker
+*.egg-info/
+dist/
+build/
+
 .env

@@ -103,18 +103,19 @@ PREFACE_TEXT: str = (
 
 # Preface steps split into confirmable chunks
 PREFACE_STEPS: list[str] = [
-    "Contact the appropriate internal product owner",
+    "*Reach out to the Product Owner of the affected project*. When in doubt, this is usually Ruben. Get approval before taking any containment actions. If you understand what happened, explain it. If you don’t have full details yet, be clear about what is still unknown.",
+    "*Report the Incident*. On the Jira Project board, open your work issue.  Under the 'Security' option, select 'Incident'. This action will trigger an alert in the #General Slack channel. Notify your team.",
     (
-        "Get approval for containing the incident from the product owner. Make sure the product owner understands the implications of containing the incident. Consider the following options:\n"
+        "*Contain the incident*. Choose the appropriate action, with Product Owner approval. Consider the following options:\n"
         "  a) If it is a user, block the user.\n"
         "  b) If it is a connection, block the connection/disconnect\n"
         "  c) If it is an API key or certificate, revoke it.\n"
         "  d) If it is an environment or server, shut it down."
     ),
-    "Secure the data, e.g., make additional copies of logs, databases, etc.",
-    "Fix the problem. If you can fix it, fix it.",
+    "*Secure the evidence.* Save relevant data: logs, database copies, system snapshots. Make sure information needed for investigation is not lost.",
+    "*Fix the immediate problem.* If the cause is clear and you can safely fix it, fix it. If not, escalate to the right person/team.",
     (
-        "Assess the damage\n"
+        "*Assess the damage*\n"
         "  a) Has personal data been leaked?\n"
         "  b) Has confidential data been leaked?"
     ),
@@ -123,15 +124,14 @@ PREFACE_STEPS: list[str] = [
 
 FOLLOWUP_STEPS_TEXT: str = (
     "*Reminder: Steps following the incident report*\n"
-    "8. Any resulting issues like tasks and user stories or documents should be linked to the original issue to preserve a chain of events.\n"
-    "9. The product owner will determine additional actions, like\n"
+    "8. *Link all Relevant Information.* Link all related tasks, user stories, and documents to the original Jira issue.\n"
+    "9. *Decide on Further Actions (Product Owner).* The product owner will determine additional actions, like\n"
     "  a) Preventive measures for the future\n"
     "  b) Changes in manuals and processes\n"
     "  c) Contact with the client\n"
     "  d) Reporting the incident to authorities\n"
-    "10. Security incidents will ALWAYS be shown in the Kwaliteit/veiligheidsdashboard and reviewed every LT meeting (Weekly).\n"
-    "11. A final review will be planned in the first LT kwaliteit/veiligheid meeting to come after three months.\n"
-    "12. Evaluation After Incidents Involving External Vendors: After the resolution of an incident in which an external vendor (such as a hosting partner) played a role in the cause or impact, Conduction conducts an evaluation meeting with the client.\n"
+    "10. Follow-up & Review. All incidents appear on the Kwaliteit/veiligheidsdashboard and are reviewed weekly in LT meetings. A final review is scheduled in the LT quality/safety meeting three months after closure.\n"
+    "11. *Special Case: External Vendors*. If an external vendor (e.g. hosting partner) played a role: Conduction holds an evaluation meeting with the client.\n"
     "During this meeting, the cause, impact, communication, responsibilities, and possible next steps are discussed.\n"
     "If the client requires a detailed advisory report or redesign proposal, a confirmation of assignment or quotation will be prepared accordingly."
 )
@@ -160,13 +160,27 @@ FORM_TEXT_PART_3: str = (
 )
 
 
-def preface_step_text(step_index: int) -> str:
+def preface_step_text(step_index: int, session: Optional[Dict[str, Any]] = None) -> str:
     """
-    Render the preface step message for a given 1-based step index using PREFACE_STEPS.
+    Render the preface step message for a given 1-based step index.
+
+    If the provided session has a linked issue, skip the second PREFACE step.
     """
-    total = len(PREFACE_STEPS)
+    # Build the effective steps list depending on session state
+    try:
+        has_linked_issue = bool((session or {}).get("linked_issue_key"))
+    except Exception:
+        has_linked_issue = False
+
+    steps = (
+        [s for i, s in enumerate(PREFACE_STEPS) if i != 1]
+        if has_linked_issue
+        else PREFACE_STEPS
+    )
+
+    total = len(steps)
     step_index = max(1, min(step_index, total))
-    body = PREFACE_STEPS[step_index - 1]
+    body = steps[step_index - 1]
     if step_index < total:
         return (
             f"*Step {step_index}/{total}*\n{body}\n\n"
