@@ -22,6 +22,12 @@ JIRA_EMAIL=you@example.com
 JIRA_API_TOKEN=your-api-token
 JIRA_PROJECT_KEY=SEC
 JIRA_ISSUE_TYPE=Task
+# Google Docs/Drive (optional)
+# Configure these if you want the bot to also create a Google Doc from the Markdown via your Apps Script Web App
+GOOGLE_WEBAPP_URL=https://script.google.com/macros/s/....../exec
+GOOGLE_SHARED_SECRET=your-shared-secret
+# Optional default folder to create documents in
+GOOGLE_FOLDER_ID=drive-folder-id
 ```
 
 #### Run (Socket Mode)
@@ -40,6 +46,7 @@ uv run python socket_app.py
 - Reply in the same thread.
 - Type `finaliseer` to output the final Markdown document.
 - Type `jira` to create a Jira issue with the Markdown as the issue description (and attached as `incident.md`).
+  After creating/updating Jira, the bot will also try to create a Google Doc from the same Markdown and post the link in the Slack thread.
 
 #### What this includes
 - Pydantic schema for the incident template fields

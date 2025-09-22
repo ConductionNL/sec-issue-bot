@@ -15,6 +15,7 @@ from incident_agent.extract import IncidentExtractor
 from incident_agent.render import render_markdown
 from incident_agent import messages as MSG
 from incident_agent.jira_client import JiraClient
+from incident_agent.google_client import GoogleClient
 from incident_agent.schema import IncidentTemplate, DUTCH_FIELD_LABELS
 import incident_agent.utils as utils
 
@@ -164,8 +165,9 @@ def build_slack_app() -> SlackApp:
                             try:
                                 # Prefer loading image from installed package resources
                                 image_path = str(
-                                    importlib_resources.files("incident_agent")
-                                    .joinpath("security_incident.png")
+                                    importlib_resources.files(
+                                        "incident_agent"
+                                    ).joinpath("security_incident.png")
                                 )
                             except Exception:
                                 # Fallback to repo-relative path during local dev
@@ -789,7 +791,13 @@ def build_slack_app() -> SlackApp:
 
     # _to_adf and _to_adf_desc moved to incident_agent.utils
 
-    def _post_to_jira(conv: Dict[str, Any], event: Dict[str, Any], root_ts: str, say, only_update: bool = False) -> None:  # type: ignore
+    def _post_to_jira(
+        conv: Dict[str, Any],
+        event: Dict[str, Any],
+        root_ts: str,
+        say,
+        only_update: bool = False,
+    ) -> tuple[Optional[str], Optional[str]]:  # type: ignore
         """
         Create or update Jira issue from the current conversation state.
 
@@ -832,7 +840,7 @@ def build_slack_app() -> SlackApp:
             else:
                 if only_update:
                     # Nothing to do if we're only allowed to update
-                    return
+                    return None, md
                 issue = jc.create_issue(
                     summary="Security incident",
                     description=description_text or "",
@@ -847,8 +855,57 @@ def build_slack_app() -> SlackApp:
                 say(text=MSG.jira_updated(str(key)), thread_ts=root_ts)
             else:
                 say(text=MSG.jira_created(str(key)), thread_ts=root_ts)
+            return str(key), md
         except Exception as e:
             say(text=MSG.could_not_create_jira(e), thread_ts=root_ts)
+            return None, None
+
+    def _post_to_drive(
+        conv: Dict[str, Any],
+        root_ts: str,
+        say,
+        *,
+        title_suffix: Optional[str] = None,
+        md: Optional[str] = None,
+    ) -> Optional[str]:  # type: ignore
+        """
+        Create a Google Doc from the current conversation's Markdown and post link.
+
+        Returns the document link, or None on failure.
+        """
+        try:
+            # Use provided Markdown when available to avoid recomputation
+            if not isinstance(md, str) or not md:
+                md = MSG.create_jira_post(conv)["md"]
+            try:
+                title_base = "Security incident"
+                if title_suffix:
+                    title = f"{title_base} {title_suffix}".strip()
+                else:
+                    title = title_base
+            except Exception:
+                title = "Security incident"
+            gc = GoogleClient()
+            doc = gc.create_document_from_markdown(md, title=title)
+            link = str((doc or {}).get("link") or "")
+            if link:
+                say(text=MSG.google_doc_created(link), thread_ts=root_ts)
+                return link
+        except Exception as ge:
+            try:
+                say(text=MSG.could_not_create_google_doc(ge), thread_ts=root_ts)
+            except Exception:
+                pass
+        return None
+
+    def _post_to_platforms(conv: Dict[str, Any], event: Dict[str, Any], root_ts: str, say) -> None:  # type: ignore
+        """
+        Orchestrate posting to external platforms (Jira, Google Drive/Docs).
+        """
+        key, md = _post_to_jira(conv, event, root_ts, say)
+        # Best-effort Google Doc creation (include Jira key in title when available)
+        suffix = key if isinstance(key, str) and key else None
+        _post_to_drive(conv, root_ts, say, title_suffix=suffix, md=md)
 
     # App Home rendering helpers moved to incident_agent.utils
 
@@ -1049,7 +1106,7 @@ def build_slack_app() -> SlackApp:
                         thread_ts=root_ts,
                     )
                     return
-                _post_to_jira(conv, event, root_ts, say)
+                _post_to_platforms(conv, event, root_ts, say)
             except Exception as e:
                 say(text=MSG.could_not_create_jira(e), thread_ts=root_ts)
             return

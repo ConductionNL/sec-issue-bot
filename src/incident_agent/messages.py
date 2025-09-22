@@ -414,6 +414,17 @@ def input_mode_set(choice: str) -> str:
     return f"Input mode set to: {choice}"
 
 
+# ===== Google Docs / Drive messages =====
+
+
+def google_doc_created(link: str) -> str:
+    return f"Google Doc created: {link}"
+
+
+def could_not_create_google_doc(error: object) -> str:
+    return f"Could not create Google Doc: {error}"
+
+
 def usage_mode() -> str:
     return "Usage: mode literal|story"
 

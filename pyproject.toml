@@ -16,6 +16,7 @@ dependencies = [
     "slack-bolt>=1.19.0",
     "slack-sdk>=3.27.1",
     "requests>=2.32.3",
+    "markdown>=3.6",
 ]
 
 [tool.setuptools.packages.find]
