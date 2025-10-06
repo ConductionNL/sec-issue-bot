@@ -1,0 +1,15 @@
+The Security Incident bot runs in Slack Socket Mode and does not expose a Service.
+
+To view logs:
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "sec-issue-bot.fullname" . }}
+
+Ensure the referenced Secret exists with required keys:
+  - OPENAI_API_KEY
+  - SLACK_BOT_TOKEN
+  - SLACK_APP_TOKEN
+Optional Jira keys:
+  - JIRA_URL
+  - JIRA_EMAIL
+  - JIRA_API_TOKEN
+  - JIRA_PROJECT_KEY
+  - JIRA_ISSUE_TYPE
