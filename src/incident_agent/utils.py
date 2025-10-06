@@ -222,14 +222,38 @@ def to_adf_desc(md_text: str) -> Dict[str, Any]:
 
 
 def _load_usage_text() -> str:
-    try:
-        module_dir = os.path.abspath(os.path.dirname(__file__))
-        usage_path = os.path.join(module_dir, "../USAGE.md")
-        with open(usage_path, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        logging.error(f"Failed to load USAGE.md for App Home: {e}")
-        return "Usage guide unavailable. Make sure USAGE.md exists at the project root."
+    """Load USAGE.md from well-known locations.
+
+    Prefer a project-root `USAGE.md`. Allow override via USAGE_MD_PATH.
+    """
+    module_dir = os.path.abspath(os.path.dirname(__file__))
+    candidates: list[str] = []
+    # Explicit override via env
+    override = os.getenv("USAGE_MD_PATH")
+    if override:
+        candidates.append(override)
+    # Project root (src layout → two levels up)
+    candidates.append(os.path.abspath(os.path.join(module_dir, "..", "..", "USAGE.md")))
+    # Previous relative assumption (kept for compatibility)
+    candidates.append(os.path.abspath(os.path.join(module_dir, "..", "USAGE.md")))
+    # CWD fallback
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), "USAGE.md")))
+    # Common container root path
+    candidates.append("/app/USAGE.md")
+
+    for path in candidates:
+        try:
+            if path and os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+        except Exception as e:
+            logging.warning(f"Error reading USAGE.md candidate {path}: {e}")
+
+    logging.error(
+        "Failed to load USAGE.md for App Home: none of the candidate paths exist: %s",
+        candidates,
+    )
+    return "Usage guide unavailable. Make sure USAGE.md exists at the project root."
 
 
 def _markdown_to_blocks(md: str) -> list[Dict[str, Any]]:

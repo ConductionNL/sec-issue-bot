@@ -3,21 +3,25 @@
 This file is meant to be copy-paste friendly for other repos.
 
 ## Container and runtime
-- App: FastAPI in `app.py`
-- Container listens on port 80 (non-root, NET_BIND_SERVICE); no secrets in env
-- Credentials (Solr, Fireworks) are sent in request body, not env
+- App: Slack Socket Mode in `socket_app.py`
+- No HTTP ports exposed; outbound connection to Slack (no Service/Ingress)
+- Credentials provided via environment/Secret: `OPENAI_API_KEY`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` (Jira optional)
 
 Local smoke test
 ```bash
-# run image: host 8000 → container 80
-docker run --rm -p 8000:80 ghcr.io/conductionnl/docurag:helm
-curl -f http://localhost:8000/openapi.json
+# Run the bot locally in a container (requires valid Slack/OpenAI secrets)
+docker run --rm \
+  -e OPENAI_API_KEY=... \
+  -e SLACK_BOT_TOKEN=xoxb-... \
+  -e SLACK_APP_TOKEN=xapp-... \
+  ghcr.io/conductionnl/sec-issue-bot:latest
+# Watch logs for a successful Slack Socket Mode connection; Ctrl+C to stop
 ```
 
 ## GitHub Actions → GHCR
 Workflow file: `.github/workflows/docker-publish.yml`
 - Builds on branches: master, main, helm (and tags v*.*.*)
-- Publishes to `ghcr.io/<owner>/docurag`
+- Publishes to `ghcr.io/<owner>/sec-issue-bot`
 - Adds `:latest` on default branch (master/main)
 - Has manual `workflow_dispatch`
 
@@ -48,7 +52,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/docurag
+          images: ghcr.io/${{ github.repository_owner }}/sec-issue-bot
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -65,74 +69,88 @@ jobs:
 ```
 
 Make GHCR package public
-- GitHub → Organization → Packages → docurag → Settings → Visibility → Public
+- GitHub → Organization → Packages → sec-issue-bot → Settings → Visibility → Public
 - Private alternative: docker login with a personal PAT (scope read:packages, SSO authorized)
 
-PAT login (private images)
-```bash
-echo <PAT> | docker login ghcr.io -u <GITHUB_USERNAME> --password-stdin
-```
-
-## Helm chart (charts/docusearch)
-Minimal values for in-cluster usage (ClusterIP, no Ingress)
+## Helm chart (charts/sec-issue-bot)
+Minimal values we used (no Service is exposed; bot runs in Slack Socket Mode)
 ```yaml
 image:
-  repository: ghcr.io/conductionnl/docurag
-  tag: helm
-  pullPolicy: IfNotPresent
+  repository: ghcr.io/conductionnl/sec-issue-bot
+  tag: latest
+  pullPolicy: Always
 
-service:
-  type: ClusterIP
-  port: 80
-  targetPort: 80
+replicaCount: 1
 
+# Recommended: mount secrets via a Secret referenced by `secretRef`
+# kubectl -n sec-issue-bot create secret generic sec-issue-bot-secrets \
+#   --from-literal=OPENAI_API_KEY=... \
+#   --from-literal=SLACK_BOT_TOKEN=... \
+#   --from-literal=SLACK_APP_TOKEN=...
+secretRef: ""
+
+# Optional (non-secret) key/values
 env:
-  UVICORN_PORT: "80"
-  LOG_LEVEL: INFO
-  TOP_K: "5"
-  MODEL_NAME: intfloat/multilingual-e5-small
-  LLM_NAME: llama-v3p3-70b-instruct
-
-ingress:
-  enabled: false
+  additional: {}
 ```
 
-Install/upgrade
+## Secrets
+Add env secrets as kubernetes Secrets so that the app has access to them
 ```bash
-helm upgrade --install docusearch charts/docusearch \
-  --namespace docurag --create-namespace \
-  --set image.repository=ghcr.io/conductionnl/docurag \
-  --set image.tag=helm
+# Create Secret with required keys
+kubectl -n sec-issue-bot create secret generic sec-issue-bot-secrets \
+  --from-literal=OPENAI_API_KEY='...' \
+  --from-literal=SLACK_BOT_TOKEN='...' \
+  --from-literal=SLACK_APP_TOKEN='...'
 ```
 
-In-cluster DNS
-- Service name: `<release>-docusearch` (e.g., `docusearch-docusearch`)
-- URL: `http://<service>.<namespace>.svc` (port 80)
+
+## ArgoCD (CLI)
+```bash
+
+# Create the Application (adjust dest-server for your cluster)
+argocd app create sec-issue-bot \
+  --project default \
+  --repo https://github.com/ConductionNL/sec-issue-bot.git \
+  --path charts/sec-issue-bot \
+  --revision main \
+  --dest-server <cluster-api-or-https://kubernetes.default.svc> \
+  --dest-namespace sec-issue-bot \
+  --sync-policy automated --self-heal --auto-prune \
+  --helm-set image.repository=ghcr.io/conductionnl/sec-issue-bot \
+  --helm-set image.tag=latest \
+  --helm-set secretRef=sec-issue-bot-secrets
+
+# Sync
+argocd app sync sec-issue-bot 
+```
+
+No Service exposed
+- The bot uses Slack Socket Mode and does not create a Service or Ingress.
 
 ## ArgoCD (UI)
-- repoURL: `https://github.com/ConductionNL/DocuRAG.git`
-- revision: `helm`
-- path: `charts/docusearch`
-- namespace: `docurag` (CreateNamespace)
-- values: see Helm section above
+- repoURL: `https://github.com/ConductionNL/sec-issue-bot.git`
+- revision: `main` (use the branch that contains `charts/sec-issue-bot`)
+- path: `charts/sec-issue-bot`
+- namespace: `sec-issue-bot` (enable CreateNamespace)
+- values: set `image.tag: latest` and keep `image.pullPolicy: Always`; add `secretRef` or `env.additional` as needed
+
+If ArgoCD cannot access the repo, add it under Settings → Repositories (HTTPS with PAT or SSH), then create/sync the Application. When ArgoCD manages the app, avoid also installing it manually with Helm CLI (uninstall the manual release first to prevent ownership conflicts).
 
 Auto-deploy with latest
-- Workflow adds `:latest` on default branch; set `image.tag: latest` when you want to track default branch builds
+- CI should push `:latest` on the default branch. Keep `image.tag: latest` and `image.pullPolicy: Always` to track the newest build.
 
 ## Troubleshooting
 - denied on docker pull → package private or PAT/SSO missing
 - manifest unknown → tag not published yet (rerun workflow)
-- connection refused/reset → port mismatch; ensure `UVICORN_PORT=80` and Service targetPort=80
-- no Service endpoints → pod not ready or selector/name mismatch
-- cross-namespace timeout → check NetworkPolicy
+- Argo error "can't evaluate field additional" → ensure `env:` is a map with `additional: {}` (don’t set `env` to a string or list)
+- Argo repo not accessible → register the repo in ArgoCD Settings → Repositories (or use CLI to add)
 
-## Quick smoke tests (cluster)
+## Quick checks
 ```bash
-# same namespace
-kubectl -n docurag run curl --rm -it --image=curlimages/curl:8.10.1 -- \
-  curl -sf http://docusearch-docusearch/openapi.json
+# View logs
+kubectl -n sec-issue-bot logs deploy/sec-issue-bot-sec-issue-bot -f
 
-# from another namespace (e.g., test-mcc)
-kubectl -n test-mcc run curl --rm -it --image=curlimages/curl:8.10.1 -- \
-  curl -sf http://docusearch-docusearch.docurag.svc/openapi.json
+# Inspect objects
+kubectl -n sec-issue-bot get deploy,rs,pod
 ```
