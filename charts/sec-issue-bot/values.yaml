@@ -2,13 +2,10 @@ image:
   repository: ghcr.io/conductionnl/sec-issue-bot
   tag: latest
   pullPolicy: Always
-
 imagePullSecrets: []
-
 replicaCount: 1
-
-podAnnotations: {}
-
+podAnnotations:
+  rolloutTimestamp: 2522cb222afcf77ed3506c9088ea732cc020262a
 resources:
   limits:
     cpu: 500m
@@ -16,7 +13,6 @@ resources:
   requests:
     cpu: 100m
     memory: 128Mi
-
 env:
   # Slack and other runtime secrets should be mounted via Secret, not plaintext here
   # Use envFrom.secretRef.name to reference a Secret containing the following keys:
@@ -29,11 +25,7 @@ env:
   # - JIRA_PROJECT_KEY (optional)
   # - JIRA_ISSUE_TYPE (optional)
   additional: {}
-
 secretRef: ""
-
 nodeSelector: {}
-
 tolerations: []
-
 affinity: {}
