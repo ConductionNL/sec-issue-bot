@@ -5,7 +5,7 @@ image:
 imagePullSecrets: []
 replicaCount: 1
 podAnnotations:
-  rolloutTimestamp: 2522cb222afcf77ed3506c9088ea732cc020262a
+  rolloutTimestamp: 96704e0fa917db5cd2b76adbaa45f4aefaf2cc16
 resources:
   limits:
     cpu: 500m
