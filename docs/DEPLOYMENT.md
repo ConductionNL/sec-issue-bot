@@ -68,6 +68,40 @@ jobs:
           cache-to: type=gha,mode=max
 ```
 
+### Automatic rollout on main
+To ensure new pods are created even when using a mutable tag like `latest`, the workflow bumps a rollout annotation on each `main` build. This changes the pod template so Kubernetes creates a new ReplicaSet and pulls the latest image.
+
+Workflow steps (appended after the build step):
+
+```yaml
+      - name: Bump pod rollout annotation in values.yaml
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: mikefarah/yq@v4
+        with:
+          cmd: yq -i '.podAnnotations.rolloutTimestamp = strenv(GITHUB_SHA)' charts/sec-issue-bot/values.yaml
+
+      - name: Commit and push rollout bump
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          git config user.name "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          if git diff --quiet --exit-code charts/sec-issue-bot/values.yaml; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git add charts/sec-issue-bot/values.yaml
+          git commit -m "ci: force rollout via podAnnotations.rolloutTimestamp=${GITHUB_SHA} [skip ci]"
+          git push
+```
+
+Helm values reference (the chart supports pod annotations):
+
+```yaml
+podAnnotations:
+  rolloutTimestamp: "<auto-set by CI>"
+```
+
+
 Make GHCR package public
 - GitHub → Organization → Packages → sec-issue-bot → Settings → Visibility → Public
 - Private alternative: docker login with a personal PAT (scope read:packages, SSO authorized)
@@ -139,39 +173,6 @@ If ArgoCD cannot access the repo, add it under Settings → Repositories (HTTPS 
 
 Auto-deploy with latest
 - CI should push `:latest` on the default branch. Keep `image.tag: latest` and `image.pullPolicy: Always` to track the newest build.
-
-### Automatic rollout on main
-To ensure new pods are created even when using a mutable tag like `latest`, the workflow bumps a rollout annotation on each `main` build. This changes the pod template so Kubernetes creates a new ReplicaSet and pulls the latest image.
-
-Workflow steps (appended after the build step):
-
-```yaml
-      - name: Bump pod rollout annotation in values.yaml
-        if: ${{ github.ref == 'refs/heads/main' }}
-        uses: mikefarah/yq@v4
-        with:
-          cmd: yq -i '.podAnnotations.rolloutTimestamp = strenv(GITHUB_SHA)' charts/sec-issue-bot/values.yaml
-
-      - name: Commit and push rollout bump
-        if: ${{ github.ref == 'refs/heads/main' }}
-        run: |
-          git config user.name "${GITHUB_ACTOR}"
-          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
-          if git diff --quiet --exit-code charts/sec-issue-bot/values.yaml; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          git add charts/sec-issue-bot/values.yaml
-          git commit -m "ci: force rollout via podAnnotations.rolloutTimestamp=${GITHUB_SHA} [skip ci]"
-          git push
-```
-
-Helm values reference (the chart supports pod annotations):
-
-```yaml
-podAnnotations:
-  rolloutTimestamp: "<auto-set by CI>"
-```
 
 ## Troubleshooting
 - denied on docker pull → package private or PAT/SSO missing
