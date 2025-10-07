@@ -5,11 +5,17 @@ from pydantic import BaseModel, Field
 
 
 class IncidentTemplate(BaseModel):
-    beschrijving_afwijking: Optional[str] = Field(None, description="1. Description of deviation")
+    beschrijving_afwijking: Optional[str] = Field(
+        None, description="1. Description of deviation"
+    )
 
     # 2. Maatregelen
-    maatregelen_beheersen_corrigeren: Optional[str] = Field(None, description="2.1 Measures to control and correct the deviation")
-    aanpassen_consequenties: Optional[str] = Field(None, description="2.2 Adjust consequences")
+    maatregelen_beheersen_corrigeren: Optional[str] = Field(
+        None, description="2.1 Measures to control and correct the deviation"
+    )
+    aanpassen_consequenties: Optional[str] = Field(
+        None, description="2.2 Adjust consequences"
+    )
     risicoafweging: Optional[str] = Field(
         None,
         description=(
@@ -19,16 +25,31 @@ class IncidentTemplate(BaseModel):
     )
 
     # 3. Analyse en oorzaken wegnemen
-    oorzaak_ontstaan: Optional[str] = Field(None, description="3.1 Cause of the deviation")
-    gevolgen: Optional[str] = Field(None, description="3.2 Consequences of the deviation")
+    oorzaak_ontstaan: Optional[str] = Field(
+        None, description="3.1 Cause of the deviation"
+    )
+    gevolgen: Optional[str] = Field(
+        None, description="3.2 Consequences of the deviation"
+    )
     oorzaak_wegnemen: Optional[str] = Field(None, description="3.3 Remove cause")
-    elders_voorgedaan: Optional[str] = Field(None, description="3.4 Could the deviation have occurred elsewhere")
-    acties_elders: Optional[str] = Field(None, description="3.5 Actions on deviation that occurred elsewhere")
+    elders_voorgedaan: Optional[str] = Field(
+        None, description="3.4 Could the deviation have occurred elsewhere"
+    )
+    acties_elders: Optional[str] = Field(
+        None, description="3.5 Actions on deviation that occurred elsewhere"
+    )
 
     # 4. Beoordeling genomen maatregelen (wordt gevuld na JIRA acties)
-    doeltreffendheid: Optional[str] = Field(None, description="4.1 Effectiveness of the measures taken")
-    actualisatie_risico: Optional[str] = Field(None, description="4.2 Update of risk inventory based on deviation (if applicable)")
-    aanpassing_kwaliteitssysteem: Optional[str] = Field(None, description="4.3 Adjustment to quality system (if applicable)")
+    doeltreffendheid: Optional[str] = Field(
+        None, description="4.1 Effectiveness of the measures taken"
+    )
+    actualisatie_risico: Optional[str] = Field(
+        None,
+        description="4.2 Update of risk inventory based on deviation (if applicable)",
+    )
+    aanpassing_kwaliteitssysteem: Optional[str] = Field(
+        None, description="4.3 Adjustment to quality system (if applicable)"
+    )
 
     # 5. Leerpunten
     leerpunten: Optional[str] = Field(None, description="5. Lessons learned")
@@ -43,9 +64,15 @@ class IncidentTemplate(BaseModel):
 
 
 class ExtractionQuestion(BaseModel):
-    field_key: str = Field(..., description="Key of the field in IncidentTemplate to be filled")
-    question_text: str = Field(..., description="Targeted follow-up question in English for the user")
-    rationale: Optional[str] = Field(None, description="(Optional) Brief reason why this info is needed")
+    field_key: str = Field(
+        ..., description="Key of the field in IncidentTemplate to be filled"
+    )
+    question_text: str = Field(
+        ..., description="Targeted follow-up question in English for the user"
+    )
+    rationale: Optional[str] = Field(
+        None, description="(Optional) Brief reason why this info is needed"
+    )
 
 
 class ExtractionResult(BaseModel):

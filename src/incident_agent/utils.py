@@ -62,15 +62,15 @@ def is_no(text: str) -> bool:
 
 
 def parse_mode_prefix(text: str) -> tuple[Optional[str], str]:
-    s = text.strip()
-    l = s.lower()
-    if l.startswith("story"):
-        rest = s[len("story") :].lstrip(" :")
+    stripped_text = text.strip()
+    lower_text = stripped_text.lower()
+    if lower_text.startswith("story"):
+        rest = stripped_text[len("story") :].lstrip(" :")
         return ("story", rest)
-    if l.startswith("literal"):
-        rest = s[len("literal") :].lstrip(" :")
+    if lower_text.startswith("literal"):
+        rest = stripped_text[len("literal") :].lstrip(" :")
         return ("literal", rest)
-    return (None, s)
+    return (None, stripped_text)
 
 
 # =========================
@@ -382,7 +382,6 @@ def revise_with_history(
                     content = msg.get("content") or ""
                     return content.strip()
             return ""
-        label = DUTCH_FIELD_LABELS.get(field_key, field_key)
         sys = MSG.revision_system_prompt()
         messages = [{"role": "system", "content": sys}]
         for m in history:
