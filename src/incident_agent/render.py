@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from .schema import IncidentTemplate, DUTCH_FIELD_LABELS
+from .schema import IncidentTemplate
 
 
 def render_markdown(template: IncidentTemplate) -> str:
@@ -37,7 +37,9 @@ def render_markdown(template: IncidentTemplate) -> str:
     lines.append("## 2.2 Adjust consequences")
     lines.append(val("aanpassen_consequenties"))
     lines.append("")
-    lines.append("## 2.3 Risk assessment If the deviation is of such a nature, a risk assessment must be made. Contact Mark, holder of the risk inventory")
+    lines.append(
+        "## 2.3 Risk assessment If the deviation is of such a nature, a risk assessment must be made. Contact Mark, holder of the risk inventory"
+    )
     lines.append(val("risicoafweging"))
     lines.append("")
     lines.append("# 3. Analysis and removing causes")
@@ -57,7 +59,9 @@ def render_markdown(template: IncidentTemplate) -> str:
     lines.append("## 3.5 Actions on deviation that occurred elsewhere")
     lines.append(val("acties_elders"))
     lines.append("")
-    lines.append("# 4. Assessment of measures taken This chapter will be filled once the JIRA actions are completed.")
+    lines.append(
+        "# 4. Assessment of measures taken This chapter will be filled once the JIRA actions are completed."
+    )
     lines.append("")
     lines.append("## 4.1 Effectiveness of the measures taken")
     lines.append(val("doeltreffendheid"))

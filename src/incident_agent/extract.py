@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, List
 
@@ -82,7 +81,9 @@ class IncidentExtractor:
             if not question_text:
                 label = DUTCH_FIELD_LABELS.get(key, key)
                 question_text = f"Fill in: {label}"
-            questions_fixed.append(ExtractionQuestion(field_key=key, question_text=question_text))
+            questions_fixed.append(
+                ExtractionQuestion(field_key=key, question_text=question_text)
+            )
 
         result.questions = questions_fixed
         return result
