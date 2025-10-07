@@ -54,11 +54,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Prepare main branch for rollout bump
+        if: ${{ github.event.workflow_run.head_branch == 'main' }}
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+
       - name: Bump pod rollout annotation in values.yaml
         if: ${{ github.event.workflow_run.head_branch == 'main' }}
         uses: mikefarah/yq@v4
+        env:
+          ROLLOUT_SHA: ${{ github.event.workflow_run.head_sha }}
         with:
-          cmd: yq -i '.podAnnotations.rolloutTimestamp = strenv(GITHUB_SHA)' charts/sec-issue-bot/values.yaml
+          cmd: yq -i '.podAnnotations.rolloutTimestamp = strenv(ROLLOUT_SHA)' charts/sec-issue-bot/values.yaml
 
       - name: Commit and push rollout bump
         if: ${{ github.event.workflow_run.head_branch == 'main' }}
@@ -70,6 +78,7 @@ jobs:
             exit 0
           fi
           git add charts/sec-issue-bot/values.yaml
-          git commit -m "ci: force rollout via podAnnotations.rolloutTimestamp=${GITHUB_SHA} [skip ci]"
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          git commit -m "ci: force rollout via podAnnotations.rolloutTimestamp=${{ github.event.workflow_run.head_sha }} (sha-${SHORT_SHA}) [skip ci]"
           git push
 
