@@ -14,27 +14,32 @@ docker run --rm \
   -e OPENAI_API_KEY=... \
   -e SLACK_BOT_TOKEN=xoxb-... \
   -e SLACK_APP_TOKEN=xapp-... \
-  ghcr.io/conductionnl/sec-issue-bot:latest
+  ghcr.io/conductionnl/sec-issue-bot:sha-<shortsha>
 # Watch logs for a successful Slack Socket Mode connection; Ctrl+C to stop
 ```
 
 ## GitHub Actions → GHCR
 Workflow file: `.github/workflows/docker-publish.yml`
-- Builds on branches: master, main, helm (and tags v*.*.*)
+- Trigger: after CI succeeds on `main` (via `workflow_run`) and on manual `workflow_dispatch`
 - Publishes to `ghcr.io/<owner>/sec-issue-bot`
-- Adds `:latest` on default branch (master/main)
-- Has manual `workflow_dispatch`
+- Immutable tags: pushes `sha-<shortsha>` (and also `latest` for convenience)
+- GitOps bump: updates `charts/sec-issue-bot/values.yaml` to the new immutable tag and enforces `image.pullPolicy: IfNotPresent`
 
-Snippet
+Full workflow
 ```yaml
 name: Publish Docker image to GHCR
+
 on:
-  push:
-    branches: [ "master", "main", "helm" ]
-    tags: [ 'v*.*.*' ]
+  # Gate publish on CI success on main branch
+  workflow_run:
+    workflows: [ "CI" ]
+    types: [ completed ]
   workflow_dispatch:
+
 jobs:
   build-and-push:
+    # Only run after CI succeeded on main
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -42,46 +47,71 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/sec-issue-bot
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v6
+
+      - name: Compute tags
+        id: prep
+        shell: bash
+        run: |
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE=ghcr.io/${OWNER_LC}/sec-issue-bot" >> $GITHUB_ENV
+          echo "TAGS=ghcr.io/${OWNER_LC}/sec-issue-bot:sha-${SHORT_SHA},ghcr.io/${OWNER_LC}/sec-issue-bot:latest" >> $GITHUB_ENV
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.TAGS }}
+          labels: org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-```
 
-### Automatic rollout on main
-To ensure new pods are created even when using a mutable tag like `latest`, the workflow bumps a rollout annotation on each `main` build. This changes the pod template so Kubernetes creates a new ReplicaSet and pulls the latest image.
+      - name: Prepare main branch for image tag bump
+        if: ${{ github.event.workflow_run.head_branch == 'main' }}
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
 
-Workflow steps (appended after the build step):
+      - name: Compute immutable tag
+        if: ${{ github.event.workflow_run.head_branch == 'main' }}
+        shell: bash
+        run: |
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          echo "TAG=sha-${SHORT_SHA}" >> $GITHUB_ENV
 
-```yaml
-      - name: Bump pod rollout annotation in values.yaml
-        if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Bump Helm image.tag to immutable SHA
+        if: ${{ github.event.workflow_run.head_branch == 'main' }}
+        uses: mikefarah/yq@v4
+        env:
+          TAG: ${{ env.TAG }}
+        with:
+          cmd: yq -i '.image.tag = strenv(TAG)' charts/sec-issue-bot/values.yaml
+
+      - name: Ensure image.pullPolicy is IfNotPresent
+        if: ${{ github.event.workflow_run.head_branch == 'main' }}
         uses: mikefarah/yq@v4
         with:
-          cmd: yq -i '.podAnnotations.rolloutTimestamp = strenv(GITHUB_SHA)' charts/sec-issue-bot/values.yaml
+          cmd: yq -i '.image.pullPolicy = "IfNotPresent"' charts/sec-issue-bot/values.yaml
 
-      - name: Commit and push rollout bump
-        if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Commit and push image tag bump
+        if: ${{ github.event.workflow_run.head_branch == 'main' }}
         run: |
           git config user.name "${GITHUB_ACTOR}"
           git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
@@ -90,16 +120,15 @@ Workflow steps (appended after the build step):
             exit 0
           fi
           git add charts/sec-issue-bot/values.yaml
-          git commit -m "ci: force rollout via podAnnotations.rolloutTimestamp=${GITHUB_SHA} [skip ci]"
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          git commit -m "chore: bump image tag to sha-${SHORT_SHA} [skip ci]"
           git push
 ```
 
-Helm values reference (the chart supports pod annotations):
-
-```yaml
-podAnnotations:
-  rolloutTimestamp: "<auto-set by CI>"
-```
+### Immutable deployments
+- CI bumps `charts/sec-issue-bot/values.yaml` `image.tag` to `sha-<shortsha>` on every successful `main` build.
+- Argo CD syncs to Git and deploys the exact immutable image.
+- No rollout annotations needed; a new ReplicaSet is created when the tag in Git changes.
 
 
 Make GHCR package public
@@ -111,8 +140,8 @@ Minimal values we used (no Service is exposed; bot runs in Slack Socket Mode)
 ```yaml
 image:
   repository: ghcr.io/conductionnl/sec-issue-bot
-  tag: latest
-  pullPolicy: Always
+  tag: sha-<shortsha>  # Set automatically by CI bump step
+  pullPolicy: IfNotPresent  # Immutable tags don't need Always
 
 replicaCount: 1
 
@@ -151,8 +180,6 @@ argocd app create sec-issue-bot \
   --dest-server <cluster-api-or-https://kubernetes.default.svc> \
   --dest-namespace sec-issue-bot \
   --sync-policy automated --self-heal --auto-prune \
-  --helm-set image.repository=ghcr.io/conductionnl/sec-issue-bot \
-  --helm-set image.tag=latest \
   --helm-set secretRef=sec-issue-bot-secrets
 
 # Sync
@@ -167,18 +194,19 @@ No Service exposed
 - revision: `main` (use the branch that contains `charts/sec-issue-bot`)
 - path: `charts/sec-issue-bot`
 - namespace: `sec-issue-bot` (enable CreateNamespace)
-- values: set `image.tag: latest` and keep `image.pullPolicy: Always`; add `secretRef` or `env.additional` as needed
+- values: avoid overriding `image.*`; set `secretRef` (and/or `env.additional`) if needed. Git manages the image tag.
 
 If ArgoCD cannot access the repo, add it under Settings → Repositories (HTTPS with PAT or SSH), then create/sync the Application. When ArgoCD manages the app, avoid also installing it manually with Helm CLI (uninstall the manual release first to prevent ownership conflicts).
 
-Auto-deploy with latest
-- CI should push `:latest` on the default branch. Keep `image.tag: latest` and `image.pullPolicy: Always` to track the newest build.
+Notes
+- CI pushes `sha-<shortsha>` (immutable) and `latest`. Deployments track the immutable tag stored in Git.
 
 ## Troubleshooting
 - denied on docker pull → package private or PAT/SSO missing
 - manifest unknown → tag not published yet (rerun workflow)
 - Argo error "can't evaluate field additional" → ensure `env:` is a map with `additional: {}` (don’t set `env` to a string or list)
 - Argo repo not accessible → register the repo in ArgoCD Settings → Repositories (or use CLI to add)
+- Old pods not restarting → remove ArgoCD Helm parameter overrides for `image.tag`/`image.pullPolicy` to allow Git values to take effect
 
 ## Quick checks
 ```bash
@@ -187,4 +215,8 @@ kubectl -n sec-issue-bot logs deploy/sec-issue-bot-sec-issue-bot -f
 
 # Inspect objects
 kubectl -n sec-issue-bot get deploy,rs,pod
+
+# Check current image tag and pull policy
+kubectl -n sec-issue-bot get deploy sec-issue-bot-sec-issue-bot \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}{.spec.template.spec.containers[0].imagePullPolicy}{"\n"}'
 ```
