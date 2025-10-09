@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/conductionnl/sec-issue-bot
-  tag: sha-0000000
+  tag: sha-9555179
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 replicaCount: 1
