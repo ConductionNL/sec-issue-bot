@@ -54,21 +54,34 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Prepare main branch for rollout bump
+      - name: Prepare main branch for image tag bump
         if: ${{ github.event.workflow_run.head_branch == 'main' }}
         run: |
           git fetch origin main
           git checkout -B main origin/main
 
-      - name: Bump pod rollout annotation in values.yaml
+      - name: Compute immutable tag
+        if: ${{ github.event.workflow_run.head_branch == 'main' }}
+        shell: bash
+        run: |
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          echo "TAG=sha-${SHORT_SHA}" >> $GITHUB_ENV
+
+      - name: Bump Helm image.tag to immutable SHA
         if: ${{ github.event.workflow_run.head_branch == 'main' }}
         uses: mikefarah/yq@v4
         env:
-          ROLLOUT_SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ env.TAG }}
         with:
-          cmd: yq -i '.podAnnotations.rolloutTimestamp = strenv(ROLLOUT_SHA)' charts/sec-issue-bot/values.yaml
+          cmd: yq -i '.image.tag = strenv(TAG)' charts/sec-issue-bot/values.yaml
 
-      - name: Commit and push rollout bump
+      - name: Ensure image.pullPolicy is IfNotPresent
+        if: ${{ github.event.workflow_run.head_branch == 'main' }}
+        uses: mikefarah/yq@v4
+        with:
+          cmd: yq -i '.image.pullPolicy = "IfNotPresent"' charts/sec-issue-bot/values.yaml
+
+      - name: Commit and push image tag bump
         if: ${{ github.event.workflow_run.head_branch == 'main' }}
         run: |
           git config user.name "${GITHUB_ACTOR}"
@@ -79,6 +92,6 @@ jobs:
           fi
           git add charts/sec-issue-bot/values.yaml
           SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
-          git commit -m "ci: force rollout via podAnnotations.rolloutTimestamp=${{ github.event.workflow_run.head_sha }} (sha-${SHORT_SHA}) [skip ci]"
+          git commit -m "chore: bump image tag to sha-${SHORT_SHA} [skip ci]"
           git push
 
